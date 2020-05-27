@@ -1,0 +1,4 @@
+(test
+  (name testpass)
+  (deps (glob_files runpass/*.ml))
+  (libraries milner))

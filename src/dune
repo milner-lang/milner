@@ -1,0 +1,8 @@
+(menhir
+  (modules parser)
+  (flags --table))
+
+(library
+  (name milner)
+  (libraries llvm menhirLib sedlex)
+  (preprocess (pps sedlex.ppx)))
