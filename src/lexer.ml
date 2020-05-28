@@ -17,6 +17,7 @@ let () =
   Hashtbl.add keywords "fun" FUN
 
 let rec tokenize lexbuf = match%sedlex lexbuf with
+  | '|' -> BAR
   | ',' -> COMMA
   | '=' -> EQUALS
   | '(' -> LPAREN
@@ -65,6 +66,10 @@ let rec loop lexbuf checkpoint = match checkpoint with
      loop lexbuf (I.offer checkpoint (token, startp, endp))
   | I.Shifting _ | I.AboutToReduce _ ->
      loop lexbuf (I.resume checkpoint)
-  | I.HandlingError _ -> failwith ""
-  | I.Accepted v -> v
+  | I.HandlingError _ -> Result.Error ""
+  | I.Accepted v -> Ok v
   | I.Rejected -> assert false
+
+let read lexbuf =
+  let start, _ = Sedlexing.lexing_positions lexbuf in
+  loop lexbuf (Parser.Incremental.program start)

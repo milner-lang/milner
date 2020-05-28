@@ -1,6 +1,7 @@
 %{
 %}
 
+%token BAR
 %token COMMA
 %token EQUALS
 %token LPAREN
@@ -42,7 +43,7 @@ let extern_decl :=
     }
 
 let fun_decl :=
-  | FUN; name = LIDENT; clauses = list(clause); {
+  | FUN; name = LIDENT; BAR?; clauses = separated_list(BAR, clause); {
         Ast.{
           fun_name = name;
           fun_clauses = clauses;
@@ -82,13 +83,22 @@ let clause :=
         }
       }
 
-let expr :=
-  | seq_expr
+let expr := seq_expr
 
 let seq_expr :=
-  | exp1 = seq_expr; SEMICOLON; exp2 = atom_expr; {
+  | exp1 = seq_expr; SEMICOLON; exp2 = apply_expr; {
         Ast.{
-          annot_item = Ast.Seq_expr(exp1, exp2);
+          annot_item = Seq_expr(exp1, exp2);
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
+  | apply_expr
+
+let apply_expr :=
+  | f = apply_expr; LPAREN; args = separated_list(COMMA, apply_expr); RPAREN; {
+        Ast.{
+          annot_item = Apply_expr(f, args);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
         }

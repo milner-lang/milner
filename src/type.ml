@@ -1,19 +1,60 @@
-type term =
-  |
-
 type prim =
   | Cstr
   | Int8
-  | Uint8
+  | Nat8
   | Int16
-  | Uint16
+  | Nat16
   | Int32
-  | Uint32
+  | Nat32
   | Int64
-  | Uint64
+  | Nat64
   | Unit
 
 type ty =
+  | Fun of fun_ty
+  | Pointer of t
   | Prim of prim
-  | Pi of ty list * ty
-  | Var of int
+
+and t = ty UnionFind.t
+
+and fun_ty = {
+    dom : t list;
+    codom : t;
+  }
+
+let prim_eq lhs rhs = match lhs, rhs with
+  | Cstr, Cstr -> true
+  | Int8, Int8 -> true
+  | Nat8, Nat8 -> true
+  | Int16, Int16 -> true
+  | Nat16, Nat16 -> true
+  | Int32, Int32 -> true
+  | Nat32, Nat32 -> true
+  | Int64, Int64 -> true
+  | Nat64, Nat64 -> true
+  | Unit, Unit -> true
+  | _, _ -> false
+
+let rec unify lhs rhs = match lhs, rhs with
+  | Fun lhs, Fun rhs -> unify_fun lhs rhs
+  | Pointer lhs, Pointer rhs -> UnionFind.union unify (Ok ()) lhs rhs
+  | Prim lhs, Prim rhs ->
+     if prim_eq lhs rhs then
+       Ok ()
+     else
+       Error ""
+  | _, _ -> Error ""
+
+and unify_fun lhs rhs =
+  let rec loop lhs rhs = match lhs, rhs with
+    | [], [] -> Ok ()
+    | [], _ :: _ -> Error ""
+    | _ :: _, [] -> Error ""
+    | x :: xs, y :: ys ->
+       match UnionFind.union unify (Ok ()) x y with
+       | Ok () -> loop xs ys
+       | Error e -> Error e
+  in
+  match loop lhs.dom rhs.dom with
+  | Ok () -> UnionFind.union unify (Ok ()) lhs.codom rhs.codom
+  | Error e -> Error e
