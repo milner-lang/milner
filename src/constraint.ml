@@ -9,13 +9,13 @@ type t =
 
 type forall = Forall of t list * Type.t
 
-type error = |
+type 'a solver = ('a, string) result
 
-type 'a solver = ('a, error) result
+module Mon : Monad.MONAD with type 'a t = 'a solver = struct
+  type 'a t = 'a solver
 
-let return a = Ok a
+  let return a = Ok a
 
-module BindingOps = struct
   let ( let+ ) m f =
     match m with
     | Error e -> Error e
@@ -35,13 +35,7 @@ module BindingOps = struct
     | Error e -> Error e
 end
 
-open BindingOps
-
-let print_constraint = function
-  | Eq _ -> print_endline "Eq"
-  | Let_mono _ -> print_endline "Let_mono"
-  | Inst _ -> print_endline "Inst"
-  | Nat _ -> print_endline "Nat"
+open Mon
 
 let rec solve tctx = function
   | Eq(t1, t2) -> UnionFind.union Type.unify (Ok ()) t1 t2
