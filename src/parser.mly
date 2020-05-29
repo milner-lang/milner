@@ -1,7 +1,9 @@
 %{
 %}
 
+%token ARROW
 %token BAR
+%token COLON
 %token COMMA
 %token EQUALS
 %token LPAREN
@@ -10,6 +12,7 @@
 %token UNDERSCORE
 %token EXTERN
 %token FUN
+%token VAL
 %token <int> INT_LIT
 %token <string> STRING_LIT
 %token <string> LIDENT
@@ -29,26 +32,60 @@ let decl :=
         annot_end = $endpos;
       }
     }
-  | ~ = fun_decl; {
+  | ~ = forward_decl; {
+        let a, b = forward_decl in
+        Ast.{
+            annot_item = Forward_decl(a, b);
+            annot_begin = $symbolstartpos;
+            annot_end = $endpos;
+        }
+      }
+  | ~ = fun_def; {
       Ast.{
-        annot_item = Ast.Fun fun_decl;
+        annot_item = Ast.Fun fun_def;
         annot_begin = $symbolstartpos;
         annot_end = $endpos
       }
     }
 
-let extern_decl :=
-  | EXTERN; {
-      ()
-    }
+let extern_decl := EXTERN; {
+    ()
+  }
 
-let fun_decl :=
+let forward_decl := VAL; name = LIDENT; COLON; ~ = ty; {
+        (name, ty)
+      }
+
+let fun_def :=
   | FUN; name = LIDENT; BAR?; clauses = separated_list(BAR, clause); {
         Ast.{
           fun_name = name;
           fun_clauses = clauses;
         }
       }
+
+let ty := arrow_ty
+
+let arrow_ty :=
+  | FUN; LPAREN; dom = separated_list(COMMA, ty); RPAREN; ARROW; codom = ty;
+    {
+      Ast.{
+        annot_item = Arrow(dom, codom);
+        annot_begin = $symbolstartpos;
+        annot_end = $endpos;
+      }
+    }
+  | atom_ty
+
+let atom_ty :=
+  | LPAREN; RPAREN; {
+        Ast.{
+          annot_item = Unit;
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
+  | LPAREN; ~ = ty; RPAREN; { ty }
 
 let lit :=
   | int = INT_LIT; { Ast.Int_lit int }
@@ -60,8 +97,15 @@ let pat :=
 
 let pat_atom :=
   | id = LIDENT; {
+    Ast.{
+      annot_item = Var_pat id;
+      annot_begin = $symbolstartpos;
+      annot_end = $endpos;
+    }
+  }
+  | ~ = lit; {
       Ast.{
-        annot_item = Var_pat id;
+        annot_item = Lit_pat lit;
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
       }

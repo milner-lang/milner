@@ -1,29 +1,23 @@
 module StringMap = Map.Make(String)
-module Symtable = ScopedMap.Make(String)
 
 type error =
   | Redefined of string
-  | Not_enough_params of int
-  | Too_many_params of int
-  | Unbound of string
   | Unimplemented of string
 
 type state = {
     genvar : UnionFind.gen;
-    constraints : Constraint.t;
-    tctx : Type.t Symtable.t;
+    funcs : (string, Type.t) Hashtbl.t;
   }
 
-type 'a t = state -> ('a, error) result * state
+type 'a t = state -> ('a * Constraint.t list, error) result * state
 
-let return a s = (Ok a, s)
+let return a s = (Ok (a, []), s)
 
 let throw e s = (Error e, s)
 
 let init_state = {
     genvar = UnionFind.init_gen;
-    constraints = Constraint.True;
-    tctx = Symtable.empty;
+    funcs = Hashtbl.create 20;
   }
 
 let run m =
@@ -33,25 +27,31 @@ let run m =
 module BindingOps = struct
   let ( let+ ) t f s =
     let r, s = t s in
-    (Result.map f r, s)
+    match r with
+    | Error e -> (Error e, s)
+    | Ok (a, c) -> (Ok (f a, c), s)
 
   let ( and+ ) t1 t2 s =
     let r1, s = t1 s in
     match r1 with
     | Error e -> (Error e, s)
-    | Ok a ->
+    | Ok (a, c1) ->
        let r2, s = t2 s in
        match r2 with
        | Error e -> (Error e, s)
-       | Ok b -> (Ok (a, b), s)
+       | Ok (b, c2) -> (Ok ((a, b), List.append c1 c2), s)
 
   let ( and* ) = ( and+ )
 
   let ( let* ) t f s =
-    let r, s = t s in
-    match r with
+    let r1, s = t s in
+    match r1 with
     | Error e -> (Error e, s)
-    | Ok a -> f a s
+    | Ok (a, c1) ->
+       let r2, s = f a s in
+       match r2 with
+       | Error e -> (Error e, s)
+       | Ok (b, c2) -> (Ok (b, List.append c1 c2), s)
 end
 
 open BindingOps
@@ -69,99 +69,117 @@ let rec fold_rightM f acc = function
      let* acc = fold_rightM f acc xs in
      f acc x
 
-let get s = (Ok s, s)
+let constrain c s =
+  (Ok ((), [c]), s)
 
-let put s' _ = (Ok (), s')
-
-let in_scope scope m =
-  let* old_s = get in
-  let* () = put { old_s with tctx = Symtable.extend scope old_s.tctx } in
-  let* a = m in
-  let+ () = put old_s in
-  a
-
-let find_var v =
-  let* s = get in
-  match Symtable.find v s.tctx with
-  | None -> throw (Unbound v)
-  | Some t -> return t
+let in_scope scope m s =
+  let (r, s) = m s in
+  match r with
+  | Error e -> (Error e, s)
+  | Ok (a, c) -> (Ok (a, [Constraint.Let_mono(scope, c)]), s)
 
 let fresh_var s =
   let (ty, genvar) = UnionFind.fresh s.genvar in
-  (Ok ty, { s with genvar })
+  (Ok (ty, []), { s with genvar })
 
-let ty ty s =
+let create_ty ty s =
   let (ty, genvar) = UnionFind.wrap s.genvar ty in
-  (Ok ty, { s with genvar })
+  (Ok (ty, []), { s with genvar })
 
-let add_constraint c s =
-  (Ok (), { s with constraints = Constraint.Conj(s.constraints, c) })
+let rec read_ty = function
+  | Ast.Unit -> create_ty (Type.Prim Type.Unit)
+  | Ast.Arrow(dom, codom) ->
+     let* dom = mapM (fun x -> read_ty x.Ast.annot_item) dom in
+     let* codom = read_ty codom.Ast.annot_item in
+     create_ty (Type.Fun { dom; codom })
 
-let infer_lit = function
-  | Ast.Int_lit _ ->
-     let* ty = fresh_var in
-     let+ () = add_constraint (Constraint.Nat ty) in
-     ty
-  | Ast.Str_lit _ -> ty (Type.Prim Type.Cstr)
-  | Ast.Unit_lit -> ty (Type.Prim Type.Unit)
+let decl_fun name ty s =
+  if Hashtbl.mem s.funcs name then
+    (Error (Redefined name), s)
+  else (
+    Hashtbl.add s.funcs name ty;
+    (Ok ((), []), s)
+  )
 
-let infer_pat = function
+let get_fun name s =
+  (Ok (Hashtbl.find_opt s.funcs name, []), s)
+
+let lit_has_ty lit ty =
+  match lit with
+  | Ast.Int_lit _ -> constrain (Constraint.Nat ty)
+  | Ast.Str_lit _ ->
+     let* cstr = create_ty (Type.Prim Type.Cstr) in
+     constrain (Constraint.Eq(ty, cstr))
+  | Ast.Unit_lit ->
+     let* unit = create_ty (Type.Prim Type.Unit) in
+     constrain (Constraint.Eq(ty, unit))
+
+let pat_has_ty pat ty =
+  match pat with
   | Ast.Lit_pat lit ->
-     let+ ty = infer_lit lit in
-     (ty, StringMap.empty)
-  | Ast.Var_pat var ->
-     let+ ty = fresh_var in
-     (ty, StringMap.singleton var ty)
-  | Ast.Wild_pat ->
-     let+ ty = fresh_var in
-     (ty, StringMap.empty)
+     let+ () = lit_has_ty lit ty in
+     StringMap.empty
+  | Ast.Var_pat var -> return (StringMap.singleton var ty)
+  | Ast.Wild_pat -> return (StringMap.empty)
 
 exception String of string
 
-let infer_pats pats =
-  fold_rightM (fun (tys, map) pat ->
+let pats_have_tys pats =
+  fold_rightM (fun map (pat, ty) ->
       let f k _ _ = raise (String k) in
-      let* ty, map' = infer_pat pat.Ast.annot_item in
-      try return (ty :: tys, StringMap.union f map map') with
+      let* map' = pat_has_ty pat.Ast.annot_item ty in
+      try return (StringMap.union f map map') with
       | String k -> throw (Redefined k)
-    ) ([], StringMap.empty) pats
+    ) StringMap.empty pats
 
-let rec infer_expr = function
+let rec expr_has_ty expr ty =
+  match expr with
   | Ast.Apply_expr(f, args) ->
-     let* f_ty = infer_expr f.annot_item
-     and* arg_tys = mapM (fun arg -> infer_expr arg.Ast.annot_item) args
-     and* ret_ty = fresh_var in
-     let* arrow = ty (Type.Fun { dom = arg_tys; codom = ret_ty }) in
-     let+ () = add_constraint (Constraint.Eq(f_ty, arrow)) in
-     ret_ty
-  | Ast.Lit_expr lit -> infer_lit lit
+     let* arg_tys =
+       mapM (fun arg ->
+           let* ty = fresh_var in
+           let+ () = expr_has_ty arg.Ast.annot_item ty in
+           ty
+         ) args in
+     let* arrow = create_ty (Type.Fun { dom = arg_tys; codom = ty }) in
+     expr_has_ty f.annot_item arrow
+  | Ast.Lit_expr lit -> lit_has_ty lit ty
   | Ast.Seq_expr(e1, e2) ->
-     let* t1 = infer_expr e1.annot_item
-     and* unit = ty (Type.Prim Type.Unit) in
-     let* () = add_constraint (Constraint.Eq(t1, unit)) in
-     infer_expr e2.annot_item
-  | Ast.Var_expr var -> find_var var
+     let* unit = create_ty (Type.Prim Type.Unit) in
+     let* () = expr_has_ty e1.annot_item unit in
+     expr_has_ty e2.annot_item ty
+  | Ast.Var_expr var -> constrain (Constraint.Inst(var, ty))
 
-let infer_clause clause =
-  let* tys, map = infer_pats clause.Ast.clause_lhs in
-  let+ ty = in_scope map (infer_expr clause.Ast.clause_rhs.annot_item) in
-  (tys, ty)
-
-let unify_clauses (lhs_tys, lhs_ty) (rhs_tys, rhs_ty) =
-  let rec loop idx lhs rhs = match lhs, rhs with
-    | [], [] -> return ()
-    | x :: xs, y :: ys ->
-       let* () = add_constraint (Constraint.Eq(x, y)) in
-       loop (idx + 1) xs ys
-    | [], _ :: _ -> throw (Too_many_params idx)
-    | _ :: _, [] -> throw (Not_enough_params idx)
+let clause_has_ty clause ty =
+  let* lhs =
+    mapM (fun lhs ->
+        let+ ty = fresh_var in
+        (lhs, ty)
+      ) clause.Ast.clause_lhs
   in
-  let* () = loop 1 lhs_tys rhs_tys in
-  add_constraint (Constraint.Eq(lhs_ty, rhs_ty))
+  let dom = List.map (fun (_, ty) -> ty) lhs in
+  let* map = pats_have_tys lhs in
+  let* codom = fresh_var in
+  let* () = in_scope map (expr_has_ty clause.Ast.clause_rhs.annot_item codom) in
+  let* arrow = create_ty (Type.Fun({ dom; codom })) in
+  constrain (Constraint.Eq(ty, arrow))
 
-let infer_fun func =
-  let* list = mapM infer_clause func.Ast.fun_clauses in
-  match list with
-  | [] -> throw (Unimplemented "Todo")
-  | first :: rest ->
-     fold_rightM (fun () clause -> unify_clauses first clause) () rest
+let fun_has_ty func ty =
+  fold_rightM (fun () clause -> clause_has_ty clause ty) () func.Ast.fun_clauses
+
+let infer_decl = function
+  | Ast.Extern -> return ()
+  | Ast.Forward_decl(name, ty) ->
+     let* ty = read_ty ty.Ast.annot_item in
+     decl_fun name ty
+  | Ast.Fun fun_def ->
+     let* ty =
+       let* opt = get_fun fun_def.Ast.fun_name in
+       match opt with
+       | Some ty -> return ty
+       | None ->
+          let* ty = fresh_var in
+          let+ () = decl_fun fun_def.Ast.fun_name ty in
+          ty
+     in
+     fun_has_ty fun_def ty

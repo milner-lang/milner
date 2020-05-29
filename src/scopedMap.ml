@@ -16,4 +16,8 @@ module Make(Ord : OrderedType) = struct
     match Map.find_opt k t.bindings with
     | Some a -> Some a
     | None -> Option.bind t.parent (find k)
+
+  let rec iter f t =
+    Map.iter f t.bindings;
+    Option.iter (iter f) t.parent
 end

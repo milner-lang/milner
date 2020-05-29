@@ -1,10 +1,13 @@
-fun foo(_, _) = 0
-     | (_, _) = 0; 1
+val foo : fun((), ()) -> ()
+fun foo(x, ()) = x
+     | (x, y) = x; y
 
-fun bar(x, y) = x
+val bar : fun(()) -> ()
+fun bar(x) = x; (); x
 
 fun str() = "FOO BAR BAZ"
 
 fun str2() = " \" \n "
 
-fun uni() = ()
+val nil : fun() -> ()
+fun nil() = ()

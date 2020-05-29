@@ -9,11 +9,17 @@ let () =
           | Error _ -> failwith "Test failed: Parse error"
           | Ok program ->
              List.iter (fun a ->
-                 match a.Ast.annot_item with
-                 | Ast.Extern -> ()
-                 | Ast.Fun fun_def ->
-                    match Typecheck.run (Typecheck.infer_fun fun_def) with
-                    | Error _ -> failwith "Test failed: Type error"
+                 match
+                   Typecheck.run (Typecheck.infer_decl a.Ast.annot_item)
+                 with
+                 | Error _ -> failwith "Test failed: Constraints"
+                 | Ok ((), cs) ->
+                    match
+                      Constraint.solve_many Constraint.Symtable.empty cs
+                    with
+                    | Error e ->
+                       (* Constraint solver not complete yet *)
+                       failwith e
                     | Ok () -> ()
                ) program.Ast.decls
         ) ~finally:(fun () -> close_in chan)

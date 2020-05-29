@@ -4,6 +4,10 @@ type 'a annot = {
     annot_end : Lexing.position;
   }
 
+type ty =
+  | Arrow of ty annot list * ty annot
+  | Unit
+
 type literal =
   | Int_lit of int
   | Str_lit of string
@@ -32,6 +36,7 @@ type fun_def = {
 
 type decl =
   | Extern
+  | Forward_decl of string * ty annot
   | Fun of fun_def
 
 type program = {

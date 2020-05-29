@@ -42,14 +42,14 @@ let rec unify lhs rhs = match lhs, rhs with
      if prim_eq lhs rhs then
        Ok ()
      else
-       Error ""
-  | _, _ -> Error ""
+       Error "Unification fail"
+  | _, _ -> Error "Unification fail"
 
 and unify_fun lhs rhs =
   let rec loop lhs rhs = match lhs, rhs with
     | [], [] -> Ok ()
-    | [], _ :: _ -> Error ""
-    | _ :: _, [] -> Error ""
+    | [], _ :: _ -> Error "Too many"
+    | _ :: _, [] -> Error "Too few"
     | x :: xs, y :: ys ->
        match UnionFind.union unify (Ok ()) x y with
        | Ok () -> loop xs ys
