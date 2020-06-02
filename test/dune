@@ -1,4 +1,10 @@
 (test
   (name testpass)
   (deps (glob_files runpass/*.ml))
+  (modules testpass)
   (libraries milner))
+
+(test
+  (name testllvm)
+  (modules testllvm)
+  (libraries milner llvm llvm.analysis))

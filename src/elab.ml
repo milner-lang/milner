@@ -210,7 +210,11 @@ let fun_has_ty func ty =
   let+ clauses =
     mapM (fun clause -> clause_has_ty clause ty) func.Ast.fun_clauses
   in
-  Typed.{ fun_name = func.Ast.fun_name; fun_clauses = clauses }
+  Typed.{
+      fun_name = func.Ast.fun_name;
+      fun_ty = ty;
+      fun_clauses = clauses;
+  }
 
 let elab prog =
   let+ decls =

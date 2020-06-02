@@ -21,6 +21,7 @@ type clause = {
 
 type fun_def = {
     fun_name : string;
+    fun_ty : Type.t;
     fun_clauses : clause list;
   }
 

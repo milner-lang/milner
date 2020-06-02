@@ -3,6 +3,10 @@ type t = {
     names : string list;
   }
 
+let compare lhs rhs = compare lhs.id rhs.id
+
+let hash t = t.id
+
 type gen = int
 
 let init_gen = 0
