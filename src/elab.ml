@@ -10,7 +10,7 @@ type error =
 type state = {
     funcs : (string, Type.t) Hashtbl.t;
     ty_gen : UnionFind.gen;
-    var_gen : Var.gen;
+    var_gen : Typed.ns Var.gen;
   }
 
 type 'a payload = {
@@ -25,7 +25,8 @@ type 'a payload = {
    instance; it only has an applicative instance. Because I do not wrap the data
    in a continuation, I can have a monad. *)
 type 'a t =
-  (Var.t * Type.t) Symtable.t -> state -> ('a payload, error) result * state
+  (Typed.ns Var.t * Type.t) Symtable.t -> state
+  -> ('a payload, error) result * state
 
 let throw e _ s = (Error e, s)
 

@@ -1,11 +1,14 @@
 module IntMap = Map.Make(Int)
 module StrMap = Map.Make(String)
 
+(** [ns] is type-level data intended to index [Var.t] *)
+type ns
+
 type aexp =
   | Param of int
   | Int32 of int
   | String of string
-  | Var of Var.t
+  | Var of ns Var.t
   | Unit
 
 type cont =
@@ -15,9 +18,9 @@ type cont =
 type expr =
   | Switch of aexp * cont IntMap.t * cont
   | Continue of cont
-  | Let_aexp of Var.t * aexp * expr
-  | Let_app of Var.t * aexp * aexp list * expr
-  | Let_strcmp of Var.t * aexp * aexp * expr
+  | Let_aexp of ns Var.t * aexp * expr
+  | Let_app of ns Var.t * aexp * aexp list * expr
+  | Let_strcmp of ns Var.t * aexp * aexp * expr
   | Let_cont of int * expr * expr
 
 type fun_def = {
@@ -33,9 +36,9 @@ type program = {
   }
 
 type state = {
-    var_gen : Var.gen;
+    var_gen : ns Var.gen;
     block_gen : int;
-    var_map : (Var.t, Var.t) Hashtbl.t;
+    var_map : (Typed.ns Var.t, ns Var.t) Hashtbl.t;
   }
 
 type 'a t = state -> ('a, string) result * state

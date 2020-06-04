@@ -1,7 +1,7 @@
 type t =
   | Eq of Type.t * Type.t
-  | Let_mono of (Var.t, Type.t) Hashtbl.t * t list
-  | Inst of Var.t * Type.t
+  | Let_mono of (Typed.ns Var.t, Type.t) Hashtbl.t * t list
+  | Inst of Typed.ns Var.t * Type.t
   | Nat of Type.t
 
 type forall = Forall of t list * Type.t

@@ -1,4 +1,4 @@
-type t = {
+type _ t = {
     id : int;
     mutable names : string list;
   }
@@ -16,7 +16,7 @@ let to_string t =
     | str :: strs -> loop (str ^ "," ^ acc) strs
   in (Int.to_string t.id) ^ "@" ^ loop "" t.names
 
-type gen = int
+type _ gen = int
 
 let init_gen = 0
 
