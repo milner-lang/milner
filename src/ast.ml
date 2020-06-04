@@ -14,6 +14,7 @@ type literal =
   | Unit_lit
 
 type pat =
+  | As_pat of pat annot * string
   | Lit_pat of literal
   | Var_pat of string
   | Wild_pat

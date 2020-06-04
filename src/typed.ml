@@ -1,6 +1,11 @@
 module StringMap = Map.Make(String)
 
-type pat =
+type pat = {
+    pat_node : pat_node;
+    pat_vars : Var.t list;
+  }
+
+and pat_node =
   | Int_pat of Type.t * int
   | Str_pat of string
   | Wild_pat
@@ -11,11 +16,11 @@ type expr =
   | Str_expr of string
   | Seq_expr of expr * expr
   | Unit_expr
-  | Var_expr of string
+  | Var_expr of Var.t
 
 type clause = {
     clause_lhs : pat list;
-    clause_vars : Type.t StringMap.t;
+    clause_vars : (Var.t * Type.t) StringMap.t;
     clause_rhs : expr;
   }
 

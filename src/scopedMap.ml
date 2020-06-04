@@ -10,7 +10,8 @@ module Make(Ord : OrderedType) = struct
 
   let empty = { bindings = Map.empty; parent = None }
 
-  let extend bindings parent = { bindings; parent = Some parent }
+  let extend bindings parent =
+    { bindings; parent = Some parent }
 
   let rec find k t =
     match Map.find_opt k t.bindings with

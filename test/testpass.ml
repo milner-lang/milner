@@ -8,13 +8,16 @@ let () =
           match Lexer.read lexbuf with
           | Error _ -> failwith "Test failed: Parse error"
           | Ok program ->
-             match Elab.run (Elab.elab program) with
+             match Elab.elab program with
              | Error _ -> failwith "Test failed: Constraints"
-             | Ok (_, cs) ->
-                match Constraint.solve_many Constraint.Symtable.empty cs with
+             | Ok (prog, cs) ->
+                match Constraint.solve_many (Hashtbl.create 100) cs with
                 | Error e ->
                    (* Constraint solver not complete yet *)
                    failwith e
-                | Ok () -> ()
+                | Ok () ->
+                   match ANF.compile prog with
+                   | Error e -> failwith ("Test failed: ANF: " ^ e)
+                   | Ok _ -> ()
         ) ~finally:(fun () -> close_in chan)
     ) ["fun.ml"]

@@ -1,10 +1,7 @@
-module StringMap = Map.Make(String)
-module Symtable = ScopedMap.Make(String)
-
 type t =
   | Eq of Type.t * Type.t
-  | Let_mono of Type.t StringMap.t * t list
-  | Inst of string * Type.t
+  | Let_mono of (Var.t, Type.t) Hashtbl.t * t list
+  | Inst of Var.t * Type.t
   | Nat of Type.t
 
 type forall = Forall of t list * Type.t
@@ -40,14 +37,13 @@ open Mon
 let rec solve tctx = function
   | Eq(t1, t2) -> UnionFind.union Type.unify (Ok ()) t1 t2
   | Inst(var, t1) ->
-     begin match Symtable.find var tctx with
-     | None ->
-        Symtable.iter (fun k _ -> print_endline k) tctx;
-        Error "Var not found"
+     begin match Hashtbl.find_opt tctx var with
+     | None -> Error "Var not found"
      | Some t2 -> UnionFind.union Type.unify (Ok ()) t1 t2
      end
   | Let_mono(bindings, cs) ->
-     solve_many (Symtable.extend bindings tctx) cs
+     Hashtbl.iter (Hashtbl.add tctx) bindings;
+     solve_many tctx cs
   | Nat _ -> Error "Unimplemented"
 
 and solve_many tctx = function

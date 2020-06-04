@@ -10,6 +10,7 @@
 %token RPAREN
 %token SEMICOLON
 %token UNDERSCORE
+%token AS
 %token EXTERN
 %token FUN
 %token VAL
@@ -93,6 +94,13 @@ let lit :=
   | LPAREN; RPAREN; { Ast.Unit_lit }
 
 let pat :=
+  | pat = pat_atom; AS; id = LIDENT; {
+        Ast.{
+          annot_item = As_pat(pat, id);
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
   | pat_atom
 
 let pat_atom :=

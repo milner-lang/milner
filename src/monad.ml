@@ -10,6 +10,13 @@ end
 module List(M : MONAD) = struct
   open M
 
+  let rec iterM f = function
+    | [] -> return ()
+    | x :: xs ->
+       let+ () = f x
+       and+ () = iterM f xs in
+       ()
+
   let rec mapM f = function
     | [] -> return []
     | x :: xs ->
