@@ -11,6 +11,7 @@ type state = {
     funcs : (string, Type.t) Hashtbl.t;
     ty_gen : UnionFind.gen;
     var_gen : Typed.ns Var.gen;
+    prelude_tys : Type.prelude;
   }
 
 type 'a payload = {
@@ -25,22 +26,22 @@ type 'a payload = {
    instance; it only has an applicative instance. Because I do not wrap the data
    in a continuation, I can have a monad. *)
 type 'a t =
-  (Typed.ns Var.t * Type.t) Symtable.t -> state
-  -> ('a payload, error) result * state
+  Typed.ns Var.t Symtable.t -> state -> ('a payload, error) result * state
 
 let throw e _ s = (Error e, s)
 
-let init_state = {
-    ty_gen = UnionFind.init_gen;
+let init_state =
+  let pre, ty_gen = Type.init in
+  { ty_gen;
     var_gen = Var.init_gen;
     funcs = Hashtbl.create 20;
-  }
+    prelude_tys = pre; }
 
 let run m =
-  let r, _ = m Symtable.empty init_state in
+  let r, s = m Symtable.empty init_state in
   match r with
   | Error e -> Error e
-  | Ok w -> Ok (w.data, L.to_list w.c)
+  | Ok w -> Ok (w.data, L.to_list w.c, s.prelude_tys)
 
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
@@ -99,9 +100,9 @@ let in_scope scope m env s =
   match r with
   | Error e -> (Error e, s)
   | Ok w ->
-     let hashtbl = Hashtbl.create (StringMap.cardinal scope) in
-     List.iter (fun (_, (var, ty)) ->
-         Hashtbl.add hashtbl var ty
+     let hashtbl = Constraint.Vartbl.create (StringMap.cardinal scope) in
+     List.iter (fun (_, var) ->
+         Constraint.Vartbl.add hashtbl var ()
        ) (StringMap.bindings scope);
      let c = L.singleton (Constraint.Let_mono(hashtbl, L.to_list w.c)) in
      (Ok { w with c }, s)
@@ -119,8 +120,8 @@ let create_ty ty _ s =
   let (ty, ty_gen) = UnionFind.wrap s.ty_gen ty in
   (Ok { data = ty; ex = L.singleton ty; c = L.empty }, { s with ty_gen })
 
-let fresh_var _ s =
-  let (var, var_gen) = Var.fresh s.var_gen in
+let fresh_var ty _ s =
+  let (var, var_gen) = Var.fresh s.var_gen ty in
   (Ok { data = var; ex = L.empty; c = L.empty }, { s with var_gen })
 
 let rec read_ty = function
@@ -151,18 +152,23 @@ let lit_has_ty lit ty =
      let* unit = create_ty (Type.Prim Type.Unit) in
      constrain (Constraint.Eq(ty, unit))
 
+exception String of string
+
 let rec pat_has_ty vars pat ty =
   match pat with
   | Ast.As_pat(pat, name) ->
-     let* var = fresh_var in
+     let* var = fresh_var ty in
      Var.add_name var name;
-     let+ pat, map = pat_has_ty (var :: vars) pat.Ast.annot_item ty in
-     (pat, StringMap.add name (var, ty) map)
+     let* pat, map = pat_has_ty (var :: vars) pat.Ast.annot_item ty in
+     if StringMap.mem name map then
+       throw (Redefined name)
+     else
+       return (pat, StringMap.add name var map)
   | Ast.Var_pat name ->
-     let+ var = fresh_var in
+     let+ var = fresh_var ty in
      Var.add_name var name;
      ( Typed.{ pat_node = Wild_pat; pat_vars = var :: vars }
-     , StringMap.singleton name (var, ty) )
+     , StringMap.singleton name var )
   | Ast.Wild_pat ->
      return
        ( Typed.{ pat_node = Wild_pat; pat_vars = vars }
@@ -178,8 +184,6 @@ let rec pat_has_ty vars pat ty =
            | Ast.Unit_lit -> Typed.Wild_pat
        }
      , StringMap.empty )
-
-exception String of string
 
 let pats_have_tys pats =
   fold_rightM (fun (pats, map) (pat, ty) ->
@@ -202,14 +206,14 @@ let rec expr_has_ty expr ty =
      in
      let* arrow = create_ty (Type.Fun { dom = tys; codom = ty }) in
      let+ f = expr_has_ty f.annot_item arrow in
-     Typed.Apply_expr(f, args)
+     Typed.Apply_expr(ty, f, args)
   | Ast.Seq_expr(e1, e2) ->
      let* unit = create_ty (Type.Prim Type.Unit) in
      let* e1 = expr_has_ty e1.annot_item unit in
      let+ e2 = expr_has_ty e2.annot_item ty in
      Typed.Seq_expr(e1, e2)
   | Ast.Var_expr var ->
-     let* var, _ = find var in
+     let* var = find var in
      let+ () = constrain (Constraint.Inst(var, ty)) in
      Typed.Var_expr var
   | Ast.Lit_expr lit ->

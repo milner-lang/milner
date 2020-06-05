@@ -1,9 +1,11 @@
 (** [t] is intended to be indexed by a phantom type indicating its namespace. *)
 type _ t
 
+val ty : _ t -> Type.t
+
 val add_name : _ t -> string -> unit
 
-val compare : 'namespace t -> 'namespace t -> int
+val compare : 'ns t -> 'ns t -> int
 
 val hash : _ t -> int
 
@@ -14,4 +16,4 @@ type _ gen
 
 val init_gen : _ gen
 
-val fresh : 'namespace gen -> 'namespace t * 'namespace gen
+val fresh : 'ns gen -> Type.t -> 'ns t * 'ns gen

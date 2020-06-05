@@ -1,7 +1,10 @@
 type _ t = {
     id : int;
+    ty : Type.t;
     mutable names : string list;
   }
+
+let ty t = t.ty
 
 let add_name t name =
   t.names <- name :: t.names
@@ -20,5 +23,5 @@ type _ gen = int
 
 let init_gen = 0
 
-let fresh gen =
-  ({ id = gen; names = [] }, gen + 1)
+let fresh gen ty =
+  ({ id = gen; ty; names = [] }, gen + 1)

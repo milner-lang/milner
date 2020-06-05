@@ -1,6 +1,15 @@
+module Vartbl =
+  Hashtbl.Make(
+      struct
+        type t = Typed.ns Var.t
+        let hash = Var.hash
+        let equal lhs rhs = Var.compare lhs rhs = 0
+      end
+    )
+
 type t =
   | Eq of Type.t * Type.t
-  | Let_mono of (Typed.ns Var.t, Type.t) Hashtbl.t * t list
+  | Let_mono of unit Vartbl.t * t list
   | Inst of Typed.ns Var.t * Type.t
   | Nat of Type.t
 
@@ -36,13 +45,14 @@ open Mon
 
 let rec solve tctx = function
   | Eq(t1, t2) -> UnionFind.union Type.unify (Ok ()) t1 t2
-  | Inst(var, t1) ->
-     begin match Hashtbl.find_opt tctx var with
-     | None -> Error "Var not found"
-     | Some t2 -> UnionFind.union Type.unify (Ok ()) t1 t2
+  | Inst(var, t) ->
+     begin match Vartbl.find_opt tctx var with
+     | None ->
+        Error ("Var not found " ^ Var.to_string var)
+     | Some () -> UnionFind.union Type.unify (Ok ()) (Var.ty var) t
      end
   | Let_mono(bindings, cs) ->
-     Hashtbl.iter (Hashtbl.add tctx) bindings;
+     Vartbl.iter (Vartbl.add tctx) bindings;
      solve_many tctx cs
   | Nat _ -> Error "Unimplemented"
 

@@ -9,14 +9,16 @@ let () =
           | Error _ -> failwith "Test failed: Parse error"
           | Ok program ->
              match Elab.elab program with
-             | Error _ -> failwith "Test failed: Constraints"
-             | Ok (prog, cs) ->
-                match Constraint.solve_many (Hashtbl.create 100) cs with
+             | Error _ -> failwith "Test failed: Constraint gen"
+             | Ok (prog, cs, tys) ->
+                match
+                  Constraint.solve_many (Constraint.Vartbl.create 100) cs
+                with
                 | Error e ->
                    (* Constraint solver not complete yet *)
-                   failwith e
+                   failwith ("Test failed: Solver: " ^ e)
                 | Ok () ->
-                   match ANF.compile prog with
+                   match ANF.compile tys prog with
                    | Error e -> failwith ("Test failed: ANF: " ^ e)
                    | Ok _ -> ()
         ) ~finally:(fun () -> close_in chan)

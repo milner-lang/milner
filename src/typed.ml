@@ -14,7 +14,7 @@ and pat_node =
   | Wild_pat
 
 type expr =
-  | Apply_expr of expr * expr list
+  | Apply_expr of Type.t * expr * expr list
   | Int_expr of Type.t * int
   | Str_expr of string
   | Seq_expr of expr * expr
@@ -23,7 +23,7 @@ type expr =
 
 type clause = {
     clause_lhs : pat list;
-    clause_vars : (ns Var.t * Type.t) StringMap.t;
+    clause_vars : ns Var.t StringMap.t;
     clause_rhs : expr;
   }
 

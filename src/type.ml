@@ -22,6 +22,10 @@ and fun_ty = {
     codom : t;
   }
 
+type prelude = {
+    int32 : t;
+  }
+
 let prim_eq lhs rhs = match lhs, rhs with
   | Cstr, Cstr -> true
   | Int8, Int8 -> true
@@ -58,3 +62,8 @@ and unify_fun lhs rhs =
   match loop lhs.dom rhs.dom with
   | Ok () -> UnionFind.union unify (Ok ()) lhs.codom rhs.codom
   | Error e -> Error e
+
+let init =
+  let ty_gen = UnionFind.init_gen in
+  let int32, ty_gen = UnionFind.wrap ty_gen (Prim Int32) in
+  { int32 }, ty_gen
