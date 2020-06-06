@@ -8,6 +8,7 @@ type error =
   | Unimplemented of string
 
 type state = {
+    tycons : (string, Type.t) Hashtbl.t;
     funcs : (string, Type.t) Hashtbl.t;
     ty_gen : UnionFind.gen;
     var_gen : Typed.ns Var.gen;
@@ -30,15 +31,19 @@ type 'a t =
 
 let throw e _ s = (Error e, s)
 
-let init_state =
+let init_state () =
   let pre, ty_gen = Type.init in
+  let tycons = Hashtbl.create 20 in
+  Hashtbl.add tycons "Cstring" pre.cstr;
+  Hashtbl.add tycons "Int32" pre.int32;
   { ty_gen;
     var_gen = Var.init_gen;
     funcs = Hashtbl.create 20;
+    tycons;
     prelude_tys = pre; }
 
 let run m =
-  let r, s = m Symtable.empty init_state in
+  let r, s = m Symtable.empty (init_state ()) in
   match r with
   | Error e -> Error e
   | Ok w -> Ok (w.data, L.to_list w.c, s.prelude_tys)
@@ -112,6 +117,11 @@ let find name env s =
   | None -> (Error (Undefined name), s)
   | Some var -> (Ok { data = var; ex = L.empty; c = L.empty }, s)
 
+let find_tcon name _ s =
+  match Hashtbl.find_opt s.tycons name with
+  | None -> (Error (Undefined name), s)
+  | Some ty -> (Ok { data = ty; ex = L.empty; c = L.empty }, s)
+
 let fresh_tvar _ s =
   let (ty, ty_gen) = UnionFind.fresh s.ty_gen in
   (Ok { data = ty; ex = L.singleton ty; c = L.empty }, { s with ty_gen })
@@ -126,6 +136,7 @@ let fresh_var ty _ s =
 
 let rec read_ty = function
   | Ast.Unit -> create_ty (Type.Prim Type.Unit)
+  | Ast.TyCon tycon -> find_tcon tycon
   | Ast.Arrow(dom, codom) ->
      let* dom = mapM (fun x -> read_ty x.Ast.annot_item) dom in
      let* codom = read_ty codom.Ast.annot_item in
@@ -145,6 +156,9 @@ let get_fun name _ s =
 let lit_has_ty lit ty =
   match lit with
   | Ast.Int_lit _ -> constrain (Constraint.Nat ty)
+  | Ast.Int32_lit _ ->
+     let* int32 = create_ty (Type.Prim Type.Int32) in
+     constrain (Constraint.Eq(ty, int32))
   | Ast.Str_lit _ ->
      let* cstr = create_ty (Type.Prim Type.Cstr) in
      constrain (Constraint.Eq(ty, cstr))
@@ -180,6 +194,7 @@ let rec pat_has_ty vars pat ty =
          pat_node =
            match lit with
            | Ast.Int_lit n -> Typed.Int_pat(ty, n)
+           | Ast.Int32_lit n -> Typed.Int_pat(ty, n)
            | Ast.Str_lit s -> Typed.Str_pat s
            | Ast.Unit_lit -> Typed.Wild_pat
        }
@@ -220,6 +235,7 @@ let rec expr_has_ty expr ty =
      let+ () = lit_has_ty lit ty in
      match lit with
      | Ast.Int_lit n -> Typed.Int_expr(ty, n)
+     | Ast.Int32_lit n -> Typed.Int_expr(ty, n)
      | Ast.Str_lit s -> Typed.Str_expr s
      | Ast.Unit_lit -> Typed.Unit_expr
 

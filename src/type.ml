@@ -23,6 +23,7 @@ and fun_ty = {
   }
 
 type prelude = {
+    cstr : t;
     int32 : t;
   }
 
@@ -65,5 +66,6 @@ and unify_fun lhs rhs =
 
 let init =
   let ty_gen = UnionFind.init_gen in
+  let cstr, ty_gen = UnionFind.wrap ty_gen (Prim Cstr) in
   let int32, ty_gen = UnionFind.wrap ty_gen (Prim Int32) in
-  { int32 }, ty_gen
+  { cstr; int32 }, ty_gen

@@ -9,6 +9,7 @@ let alphanum = [%sedlex.regexp? upper | lower | digit | '_' | '\'']
 
 let base10_int = [%sedlex.regexp? Plus digit]
 let lident = [%sedlex.regexp? lower, Star alphanum]
+let uident = [%sedlex.regexp? upper, Star alphanum]
 
 let keywords = Hashtbl.create 23
 
@@ -29,6 +30,9 @@ let rec tokenize lexbuf = match%sedlex lexbuf with
   | '_' -> UNDERSCORE
   | '"' -> string (Buffer.create 17) lexbuf
   | "->" -> ARROW
+  | base10_int, "i32" ->
+     let str = Sedlexing.Utf8.lexeme lexbuf in
+     INT32_LIT (int_of_string (String.sub str 0 (String.length str - 3)))
   | base10_int ->
      let str = Sedlexing.Utf8.lexeme lexbuf in
      INT_LIT (int_of_string str)
@@ -38,6 +42,9 @@ let rec tokenize lexbuf = match%sedlex lexbuf with
      | Some kw -> kw
      | None -> LIDENT str
      end
+  | uident ->
+     let str = Sedlexing.Utf8.lexeme lexbuf in
+     UIDENT str
   | eof -> EOF
   | white_space -> tokenize lexbuf
   | _ -> failwith "Lexer failure"

@@ -6,10 +6,12 @@ type 'a annot = {
 
 type ty =
   | Arrow of ty annot list * ty annot
+  | TyCon of string
   | Unit
 
 type literal =
   | Int_lit of int
+  | Int32_lit of int
   | Str_lit of string
   | Unit_lit
 
