@@ -6,13 +6,17 @@ fun bar(x as y) = x; (); x; y
 
 fun str() = "FOO BAR BAZ"
 
+val str2 : fun() -> Cstring
 fun str2() = " \" \n "
 
 val nil : fun() -> ()
 fun nil() = ()
 
-fun str_fun("foo") = "foofoo"
-  | ("bar") = "barbar"
-  | ("baz") = "bazbaz"
-  | ("") = "empty"
-  | (s) = s
+fun str_fun(0i32) = "foofoo"
+  | (1i32) = "barbar"
+  | (2i32) = "bazbaz"
+  | (3i32) = "empty"
+  | (s) = ""
+
+val main : fun() -> Int32
+fun main() = 0i32

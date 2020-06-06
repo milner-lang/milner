@@ -71,15 +71,14 @@ let real_param_idx idx list =
 (** The unit type is erased. *)
 let emit_aexp t = function
   | ANF.Param idx ->
-     (* If the variable does not map to anything, it must have an erased type.
-      *)
-     begin match real_param_idx idx t.real_params with
-     | Some idx -> Some (Llvm.param t.llfun idx)
-     | None -> None
-     end
+     (* If the variable does not map to anything, it must have an erased type *)
+     Option.map (Llvm.param t.llfun) (real_param_idx idx t.real_params)
   | ANF.Int32 n -> Some (Llvm.const_int (Llvm.i32_type t.llctx) n)
-  | ANF.String s -> Some (Llvm.const_stringz t.llctx s)
-  | ANF.Var v -> Vartbl.find_opt t.llvals v
+  | ANF.String s ->
+     Some (Llvm.build_global_stringptr s "" t.llbuilder)
+  | ANF.Var v ->
+     Option.map (fun llval -> Llvm.build_load llval "" t.llbuilder)
+       (Vartbl.find_opt t.llvals v)
   | ANF.Unit -> None
 
 let rec emit_expr t = function
@@ -126,11 +125,11 @@ let rec emit_expr t = function
   | ANF.Let_cont(bbname, cont, next) ->
      let bb = Llvm.append_block t.llctx (Int.to_string bbname) t.llfun in
      Hashtbl.add t.bbs bbname bb;
+     emit_expr t next;
      let curr_bb = Llvm.insertion_block t.llbuilder in
      Llvm.position_at_end bb t.llbuilder;
      emit_expr t cont;
-     Llvm.position_at_end curr_bb t.llbuilder;
-     emit_expr t next
+     Llvm.position_at_end curr_bb t.llbuilder
   | ANF.Return aexp ->
      match emit_aexp t aexp with
      | None -> ignore (Llvm.build_ret_void t.llbuilder)

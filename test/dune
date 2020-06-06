@@ -2,7 +2,7 @@
   (name testpass)
   (deps (glob_files runpass/*.ml))
   (modules testpass)
-  (libraries milner))
+  (libraries milner llvm.analysis))
 
 (test
   (name testllvm)

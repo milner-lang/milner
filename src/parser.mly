@@ -15,8 +15,10 @@
 %token FUN
 %token VAL
 %token <int> INT_LIT
+%token <int> INT32_LIT
 %token <string> STRING_LIT
 %token <string> LIDENT
+%token <string> UIDENT
 %token EOF
 
 %start <Ast.program> program
@@ -79,6 +81,13 @@ let arrow_ty :=
   | atom_ty
 
 let atom_ty :=
+  | id = UIDENT; {
+    Ast.{
+      annot_item = TyCon id;
+      annot_begin = $symbolstartpos;
+      annot_end = $endpos;
+    }
+  }
   | LPAREN; RPAREN; {
         Ast.{
           annot_item = Unit;
@@ -90,6 +99,7 @@ let atom_ty :=
 
 let lit :=
   | int = INT_LIT; { Ast.Int_lit int }
+  | int = INT32_LIT; { Ast.Int32_lit int }
   | str = STRING_LIT; { Ast.Str_lit str }
   | LPAREN; RPAREN; { Ast.Unit_lit }
 

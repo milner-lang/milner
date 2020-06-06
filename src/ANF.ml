@@ -247,13 +247,15 @@ let rec compile_matrix occs mat =
               (* 0 = equals, 1 = greater *)
               IntMap.singleton 0 cont |> IntMap.add 1 (Block right_id)
             in
-            Let_strcmp(test_result, occ, String test_str,
-                       Let_cont(
-                           left_id, left,
-                           Let_cont(
-                               right_id, right,
-                               (* default branch = less *)
-                               Switch(Param 0, jumptable, Block left_id))))
+            Let_strcmp(
+                test_result, occ, String test_str,
+                Let_cont(
+                    left_id, left,
+                    Let_cont(
+                        right_id, right,
+                        (* default branch = less *)
+                        (* FIXME: SIGV when compiling to LLVM *)
+                        Switch(Var test_result, jumptable, Block left_id))))
         in
         let* occ, occs, map, otherwise = specialize_str idx occs mat in
         let* blocks, jumptable =
