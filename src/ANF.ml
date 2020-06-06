@@ -54,7 +54,9 @@ let init_state prelude_tys = {
 
 let run prelude_tys action =
   let r, _ = action (init_state prelude_tys) in
-  r
+  match r with
+  | Error e -> Error e
+  | Ok (a, _) -> Ok a
 
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
@@ -122,7 +124,7 @@ let find_var var s =
   | None -> failwith ("Unreachable: var not found " ^ Var.to_string var)
 
 let fresh_block s =
-  (Ok (s.block_gen, L.empty), { s with block_gen = s.block_gen })
+  (Ok (s.block_gen, L.empty), { s with block_gen = s.block_gen + 1 })
 
 let prelude_tys s = (Ok (s.prelude_tys, L.empty), s)
 

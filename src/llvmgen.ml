@@ -1,11 +1,24 @@
+module Vartbl =
+  Hashtbl.Make(
+      struct
+        type t = ANF.ns Var.t
+        let hash = Var.hash
+        let equal lhs rhs = Var.compare lhs rhs = 0
+      end)
+
+type prelude = {
+    strcmp : Llvm.llvalue;
+  }
+
 type t = {
     llctx : Llvm.llcontext;
     llmod : Llvm.llmodule;
     llbuilder : Llvm.llbuilder;
-    llvals : (ANF.ns Var.t, Llvm.llvalue) Hashtbl.t;
+    llvals : Llvm.llvalue Vartbl.t;
     llfun : Llvm.llvalue;
     bbs : (int, Llvm.llbasicblock) Hashtbl.t;
-    strcmp : Llvm.llvalue;
+    real_params : Llvm.lltype option list;
+    prelude : prelude;
   }
 
 let with_module llctx name f =
@@ -15,69 +28,101 @@ let with_module llctx name f =
 let remove_nones list = List.filter_map Fun.id list
 
 (** The unit type does not translate into a machine type. *)
-let rec transl_ty t ty =
+let rec transl_ty llctx ty =
   match UnionFind.find ty with
   | UnionFind.Value (Type.Prim prim) ->
      begin match prim with
-     | Type.Cstr -> Some (Llvm.pointer_type (Llvm.i8_type t.llctx))
-     | Type.Nat8 | Type.Int8 -> Some (Llvm.i8_type t.llctx)
-     | Type.Nat16 | Type.Int16 -> Some (Llvm.i16_type t.llctx)
-     | Type.Nat32 | Type.Int32 -> Some (Llvm.i32_type t.llctx)
-     | Type.Nat64 | Type.Int64 -> Some (Llvm.i64_type t.llctx)
+     | Type.Cstr -> Some (Llvm.pointer_type (Llvm.i8_type llctx))
+     | Type.Nat8 | Type.Int8 -> Some (Llvm.i8_type llctx)
+     | Type.Nat16 | Type.Int16 -> Some (Llvm.i16_type llctx)
+     | Type.Nat32 | Type.Int32 -> Some (Llvm.i32_type llctx)
+     | Type.Nat64 | Type.Int64 -> Some (Llvm.i64_type llctx)
      | Type.Unit -> None
      end
   | UnionFind.Value (Type.Fun fun_ty) ->
-     let params, ret = transl_fun_ty t fun_ty in
+     let params, ret = transl_fun_ty llctx fun_ty in
      let params = params |> remove_nones |> Array.of_list in
      Some (Llvm.function_type ret params)
   | UnionFind.Value (Type.Pointer _) ->
-     Some (Llvm.pointer_type (Llvm.i8_type t.llctx))
+     Some (Llvm.pointer_type (Llvm.i8_type llctx))
   | UnionFind.Root _ -> failwith ""
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
-and transl_fun_ty t fun_ty =
-  let params = List.map (transl_ty t) fun_ty.Type.dom in
+and transl_fun_ty llctx fun_ty =
+  let params = List.map (transl_ty llctx) fun_ty.Type.dom in
   let ret =
-    match transl_ty t fun_ty.Type.codom with
-    | None -> Llvm.void_type t.llctx
+    match transl_ty llctx fun_ty.Type.codom with
+    | None -> Llvm.void_type llctx
     | Some ty -> ty
   in
   (params, ret)
 
+let real_param_idx idx list =
+  let rec loop i acc list =
+    match list, i = idx with
+    | [], _ -> failwith "Param index out of bounds"
+    | None :: _, true -> None
+    | None :: xs, false -> loop (i + 1) acc xs
+    | Some _ :: _, true -> Some idx
+    | Some _ :: xs, false -> loop (i + 1) (acc + 1) xs
+  in loop 0 0 list
+
+(** The unit type is erased. *)
 let emit_aexp t = function
-  | ANF.Param idx -> Llvm.param t.llfun idx
-  | ANF.Int32 n -> Llvm.const_int (Llvm.i32_type t.llctx) n
-  | ANF.String s -> Llvm.const_stringz t.llctx s
-  | ANF.Var v -> Hashtbl.find t.llvals v
-  | ANF.Unit -> failwith "Unimplemented"
+  | ANF.Param idx ->
+     (* If the variable does not map to anything, it must have an erased type.
+      *)
+     begin match real_param_idx idx t.real_params with
+     | Some idx -> Some (Llvm.param t.llfun idx)
+     | None -> None
+     end
+  | ANF.Int32 n -> Some (Llvm.const_int (Llvm.i32_type t.llctx) n)
+  | ANF.String s -> Some (Llvm.const_stringz t.llctx s)
+  | ANF.Var v -> Vartbl.find_opt t.llvals v
+  | ANF.Unit -> None
 
 let rec emit_expr t = function
   | ANF.Switch(scrut, cases, Block default) ->
-     let scrut = emit_aexp t scrut in
      let default = Hashtbl.find t.bbs default in
-     let sw =
-       Llvm.build_switch scrut default (ANF.IntMap.cardinal cases) t.llbuilder
-     in
-     ANF.IntMap.iter (fun idx (ANF.Block bb) ->
-         let idx = Llvm.const_int (Llvm.i32_type t.llctx) idx in
-         let bb = Hashtbl.find t.bbs bb in
-         Llvm.add_case sw idx bb) cases
+     begin match emit_aexp t scrut with
+     | None -> ignore (Llvm.build_br default t.llbuilder)
+     | Some scrut ->
+        let sw =
+          Llvm.build_switch scrut default
+            (ANF.IntMap.cardinal cases) t.llbuilder
+        in
+        ANF.IntMap.iter (fun idx (ANF.Block bb) ->
+            let idx = Llvm.const_int (Llvm.i32_type t.llctx) idx in
+            let bb = Hashtbl.find t.bbs bb in
+            Llvm.add_case sw idx bb) cases
+     end
   | ANF.Continue (Block bb) ->
      let bb = Hashtbl.find t.bbs bb in
      ignore (Llvm.build_br bb t.llbuilder)
   | ANF.Let_app(dest, f, args, next) ->
-     let f = emit_aexp t f in
-     let args = List.map (emit_aexp t) args |> Array.of_list in
-     let llval = Llvm.build_call f args "" t.llbuilder in
-     Hashtbl.add t.llvals dest llval;
-     emit_expr t next
+     begin match emit_aexp t f with
+     | None -> failwith "Unreachable: Function is not erased"
+     | Some f ->
+        let args =
+          List.map (emit_aexp t) args |> remove_nones |> Array.of_list
+        in
+        let llval = Llvm.build_call f args "" t.llbuilder in
+        Vartbl.add t.llvals dest llval;
+        emit_expr t next
+     end
   | ANF.Let_strcmp(dest, lhs, rhs, next) ->
-     let lhs = emit_aexp t lhs in
-     let rhs = emit_aexp t rhs in
-     let llval = Llvm.build_call t.strcmp [|lhs; rhs|] "" t.llbuilder in
-     Hashtbl.add t.llvals dest llval;
-     emit_expr t next
+     begin match emit_aexp t lhs, emit_aexp t rhs with
+     | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
+     | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
+     | Some _, None -> failwith "Unreachable: rhs cannot be unit"
+     | Some lhs, Some rhs ->
+        let llval =
+          Llvm.build_call t.prelude.strcmp [|lhs; rhs|] "" t.llbuilder
+        in
+        Vartbl.add t.llvals dest llval;
+        emit_expr t next
+     end
   | ANF.Let_cont(bbname, cont, next) ->
      let bb = Llvm.append_block t.llctx (Int.to_string bbname) t.llfun in
      Hashtbl.add t.bbs bbname bb;
@@ -87,14 +132,57 @@ let rec emit_expr t = function
      Llvm.position_at_end curr_bb t.llbuilder;
      emit_expr t next
   | ANF.Return aexp ->
-     let llval = emit_aexp t aexp in
-     ignore (Llvm.build_ret llval t.llbuilder)
+     match emit_aexp t aexp with
+     | None -> ignore (Llvm.build_ret_void t.llbuilder)
+     | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
 
-let emit_fun t fun_def =
-  let param_tys, ret_ty = transl_fun_ty t fun_def.ANF.fun_ty in
-  let param_tys = param_tys |> remove_nones |> Array.of_list in
+let emit_fun prelude llmod fun_def =
+  let llctx = Llvm.module_context llmod in
+  let real_params, ret_ty = transl_fun_ty llctx fun_def.ANF.fun_ty in
+  let param_tys = real_params |> remove_nones |> Array.of_list in
   let lltype = Llvm.function_type ret_ty param_tys in
-  let llfun = Llvm.define_function fun_def.fun_name lltype t.llmod in
+  let llfun = Llvm.define_function fun_def.fun_name lltype llmod in
   let entry = Llvm.entry_block llfun in
-  Llvm.position_at_end entry t.llbuilder;
+  let llbuilder = Llvm.builder_at_end llctx entry in
+  let t = {
+      llctx;
+      llmod;
+      llbuilder;
+      llfun;
+      llvals = Vartbl.create (List.length fun_def.fun_vars);
+      bbs = Hashtbl.create 10;
+      real_params;
+      prelude;
+    }
+  in
+  (* Allocate stack space for all local variables *)
+  List.iter (fun var ->
+      match transl_ty t.llctx (Var.ty var) with
+      | None -> ()
+      | Some mach_ty ->
+         let llval = Llvm.build_alloca mach_ty "" llbuilder in
+         Vartbl.add t.llvals var llval
+    ) fun_def.ANF.fun_vars;
   emit_expr t fun_def.ANF.fun_body
+
+let emit_module llctx name prog =
+  let llmod = Llvm.create_module llctx name in
+  try
+    let cstr_ty = Llvm.pointer_type (Llvm.i8_type llctx) in
+    let strcmp =
+      let ty = Llvm.function_type (Llvm.i32_type llctx) [| cstr_ty; cstr_ty |]
+      in Llvm.declare_function "strcmp" ty llmod
+    in
+    let prelude = {
+        strcmp
+      }
+    in
+    List.iter (function
+        | ANF.Fun fun_def ->
+           emit_fun prelude llmod fun_def
+      ) prog.ANF.decls;
+    llmod
+  with
+  | e ->
+     Llvm.dispose_module llmod;
+     raise e

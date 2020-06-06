@@ -20,6 +20,11 @@ let () =
                 | Ok () ->
                    match ANF.compile tys prog with
                    | Error e -> failwith ("Test failed: ANF: " ^ e)
-                   | Ok _ -> ()
+                   | Ok prog ->
+                      let llctx = Llvm.global_context () in
+                      let llmod = Llvmgen.emit_module llctx "main" prog in
+                      Fun.protect (fun () ->
+                          Llvm.dump_module llmod
+                        ) ~finally:(fun () -> Llvm.dispose_module llmod)
         ) ~finally:(fun () -> close_in chan)
     ) ["fun.ml"]
