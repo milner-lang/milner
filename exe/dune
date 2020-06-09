@@ -1,0 +1,3 @@
+(executable
+  (name main)
+  (libraries cmdliner llvm.all_backends llvm.target milner))
