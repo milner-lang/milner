@@ -7,6 +7,11 @@ type error =
   | Undefined of string
   | Unimplemented of string
 
+let string_of_error = function
+  | Redefined s -> "Redefined " ^ s
+  | Undefined s -> "Undefined " ^ s
+  | Unimplemented s -> "Unimplemented " ^ s
+
 type state = {
     tycons : (string, Type.t) Hashtbl.t;
     funcs : (string, Type.t) Hashtbl.t;
