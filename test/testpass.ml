@@ -10,10 +10,8 @@ let () =
           | Ok program ->
              match Elab.elab program with
              | Error _ -> failwith "Test failed: Constraint gen"
-             | Ok (prog, cs, tys) ->
-                match
-                  Constraint.solve_many (Constraint.Vartbl.create 100) cs
-                with
+             | Ok (prog, _, tys) ->
+                match Solve.solve prog with
                 | Error e ->
                    (* Constraint solver not complete yet *)
                    failwith ("Test failed: Solver: " ^ e)
@@ -24,12 +22,7 @@ let () =
                       let llctx = Llvm.global_context () in
                       let llmod = Llvmgen.emit_module llctx "main" prog in
                       Fun.protect (fun () ->
-                          match Llvm_analysis.verify_module llmod with
-                          | None -> Llvm.dump_module llmod
-                          | Some err ->
-                             Llvm.dump_module llmod;
-                             print_endline err;
-                             failwith "Error"
+                          Llvm_analysis.assert_valid_module llmod
                         ) ~finally:(fun () -> Llvm.dispose_module llmod)
         ) ~finally:(fun () -> close_in chan)
     ) ["fun.ml"]

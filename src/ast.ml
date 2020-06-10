@@ -38,7 +38,7 @@ type fun_def = {
   }
 
 type decl =
-  | Extern
+  | External of string * ty annot
   | Forward_decl of string * ty annot
   | Fun of fun_def
 
