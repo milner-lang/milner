@@ -9,8 +9,5 @@ let () =
       let builder = Llvm.builder llctx in
       Llvm.position_at_end bb builder;
       ignore (Llvm.build_ret (Llvm.const_int (Llvm.i32_type llctx) 0) builder);
-      Llvm.dump_module llmod;
-      match Llvm_analysis.verify_module llmod with
-      | None -> ()
-      | Some err -> failwith err
+      Llvm_analysis.assert_valid_module llmod
     )

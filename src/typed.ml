@@ -15,6 +15,7 @@ and pat_node =
 
 type expr =
   | Apply_expr of Type.t * expr * expr list
+  | Global_expr of string
   | Int_expr of Type.t * int
   | Str_expr of string
   | Seq_expr of expr * expr
@@ -29,11 +30,12 @@ type clause = {
 
 type fun_def = {
     fun_name : string;
-    fun_ty : Type.t;
+    fun_ty : Constraint.forall;
     fun_clauses : clause list;
   }
 
 type decl =
+  | External of string * Type.t
   | Fun of fun_def
 
 type program = {

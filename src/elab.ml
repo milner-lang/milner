@@ -109,18 +109,27 @@ let in_scope scope m env s =
   let (r, s) = m (Symtable.extend scope env) s in
   match r with
   | Error e -> (Error e, s)
+  | Ok w -> (Ok w, s)
+
+let poly m env s =
+  let (r, s) = m env s in
+  match r with
+  | Error e -> (Error e, s)
   | Ok w ->
-     let hashtbl = Constraint.Vartbl.create (StringMap.cardinal scope) in
-     List.iter (fun (_, var) ->
-         Constraint.Vartbl.add hashtbl var ()
-       ) (StringMap.bindings scope);
-     let c = L.singleton (Constraint.Let_mono(hashtbl, L.to_list w.c)) in
-     (Ok { w with c }, s)
+     let data = (w.data, L.to_list w.ex, L.to_list w.c) in
+     (Ok { data; ex = L.empty; c = L.empty }, s)
+
+type var_kind =
+  | Local of Typed.ns Var.t
+  | Global of string
 
 let find name env s =
   match Symtable.find name env with
-  | None -> (Error (Undefined name), s)
-  | Some var -> (Ok { data = var; ex = L.empty; c = L.empty }, s)
+  | Some var -> (Ok { data = Local var; ex = L.empty; c = L.empty }, s)
+  | None ->
+     match Hashtbl.find_opt s.funcs name with
+     | Some _ -> (Ok { data = Global name; ex = L.empty; c = L.empty }, s)
+     | None -> (Error (Undefined name), s)
 
 let find_tcon name _ s =
   match Hashtbl.find_opt s.tycons name with
@@ -234,8 +243,14 @@ let rec expr_has_ty expr ty =
      Typed.Seq_expr(e1, e2)
   | Ast.Var_expr var ->
      let* var = find var in
-     let+ () = constrain (Constraint.Inst(var, ty)) in
-     Typed.Var_expr var
+     begin match var with
+     | Global name ->
+        let+ () = constrain (Constraint.Inst(name, ty)) in
+        Typed.Global_expr name
+     | Local var ->
+        let+ () = constrain (Constraint.Eq(Var.ty var, ty)) in
+        Typed.Var_expr var
+     end
   | Ast.Lit_expr lit ->
      let+ () = lit_has_ty lit ty in
      match lit with
@@ -260,12 +275,12 @@ let clause_has_ty clause ty =
   Typed.{ clause_lhs = lhs; clause_vars = map; clause_rhs = rhs }
 
 let fun_has_ty func ty =
-  let+ clauses =
-    mapM (fun clause -> clause_has_ty clause ty) func.Ast.fun_clauses
+  let+ clauses, ex, cs =
+    poly (mapM (fun clause -> clause_has_ty clause ty) func.Ast.fun_clauses)
   in
   Typed.{
       fun_name = func.Ast.fun_name;
-      fun_ty = ty;
+      fun_ty = Constraint.Forall(ex, cs, ty);
       fun_clauses = clauses;
   }
 
@@ -273,7 +288,10 @@ let elab_program prog =
   let+ decls =
     fold_leftM (fun decls next ->
         match next.Ast.annot_item with
-        | Ast.Extern -> return decls
+        | Ast.External(name, ty) ->
+           let* ty = read_ty ty.Ast.annot_item in
+           let+ () = decl_fun name ty in
+           Typed.External(name, ty) :: decls
         | Ast.Forward_decl(name, ty) ->
            let* ty = read_ty ty.Ast.annot_item in
            let+ () = decl_fun name ty in
