@@ -15,7 +15,7 @@ let keywords = Hashtbl.create 23
 
 let () =
   Hashtbl.add keywords "as" AS;
-  Hashtbl.add keywords "extern" EXTERN;
+  Hashtbl.add keywords "external" EXTERNAL;
   Hashtbl.add keywords "fun" FUN;
   Hashtbl.add keywords "val" VAL
 

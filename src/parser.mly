@@ -11,7 +11,7 @@
 %token SEMICOLON
 %token UNDERSCORE
 %token AS
-%token EXTERN
+%token EXTERNAL
 %token FUN
 %token VAL
 %token <int> INT_LIT
@@ -28,17 +28,18 @@
 let program := decls = list(decl); EOF; { { decls } }
 
 let decl :=
-  | extern_decl; {
+  | ~ = external_decl; {
+      let name, ty = external_decl in
       Ast.{
-        annot_item = Ast.Extern;
+        annot_item = Ast.External(name, ty);
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
       }
     }
   | ~ = forward_decl; {
-        let a, b = forward_decl in
+        let name, ty = forward_decl in
         Ast.{
-            annot_item = Forward_decl(a, b);
+            annot_item = Forward_decl(name, ty);
             annot_begin = $symbolstartpos;
             annot_end = $endpos;
         }
@@ -51,8 +52,8 @@ let decl :=
       }
     }
 
-let extern_decl := EXTERN; {
-    ()
+let external_decl := EXTERNAL; name = LIDENT; COLON; ~ = ty; {
+    (name, ty)
   }
 
 let forward_decl := VAL; name = LIDENT; COLON; ~ = ty; {

@@ -7,6 +7,7 @@ type ns
 
 type aexp =
   | Param of int
+  | Global of string
   | Int32 of int
   | String of string
   | Var of ns Var.t
@@ -30,6 +31,7 @@ type fun_def = {
   }
 
 type decl =
+  | External of string * Type.t
   | Fun of fun_def
 
 type program = {
@@ -98,7 +100,7 @@ let throw e s = (Error e, s)
 
 let fresh ty s =
   let v, var_gen = Var.fresh s.var_gen ty in
-  (Ok (v, L.empty), { s with var_gen })
+  (Ok (v, L.singleton v), { s with var_gen })
 
 let get_state s = (Ok (s, L.empty), s)
 
@@ -288,6 +290,7 @@ let rec compile_expr exp k =
              Let_app(v, f, args, body)
            ) args []
        )
+  | Typed.Global_expr name -> k (Global name)
   | Typed.Int_expr(_, n) -> k (Int32 n) (* Treat all ints as int32 for now *)
   | Typed.Str_expr s -> k (String s)
   | Typed.Seq_expr(e1, e2) ->
@@ -298,7 +301,8 @@ let rec compile_expr exp k =
      k (Var var)
 
 let compile_fun fun_def =
-  let arity = match UnionFind.find (fun_def.Typed.fun_ty) with
+  let Constraint.Forall(_, _, ty) = fun_def.Typed.fun_ty in
+  let arity = match UnionFind.find ty with
     | UnionFind.Value (Type.Fun fun_ty) -> fun_ty
     | _ -> assert false
   in
@@ -334,6 +338,8 @@ let compile_fun fun_def =
     fun_body = body }
 
 let compile_decl = function
+  | Typed.External(name, ty) ->
+     return (External(name, ty))
   | Typed.Fun fun_def ->
      let+ fun_def = compile_fun fun_def in
      Fun fun_def

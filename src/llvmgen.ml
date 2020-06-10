@@ -45,7 +45,7 @@ let rec transl_ty llctx ty =
      Some (Llvm.function_type ret params)
   | UnionFind.Value (Type.Pointer _) ->
      Some (Llvm.pointer_type (Llvm.i8_type llctx))
-  | UnionFind.Root _ -> failwith ""
+  | UnionFind.Root _ -> failwith "Unsolved type"
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
@@ -73,6 +73,11 @@ let emit_aexp t = function
   | ANF.Param idx ->
      (* If the variable does not map to anything, it must have an erased type *)
      Option.map (Llvm.param t.llfun) (real_param_idx idx t.real_params)
+  | ANF.Global name ->
+     begin match Llvm.lookup_function name t.llmod with
+     | None -> assert false
+     | Some func -> Some func
+     end
   | ANF.Int32 n -> Some (Llvm.const_int (Llvm.i32_type t.llctx) n)
   | ANF.String s ->
      Some (Llvm.build_global_stringptr s "" t.llbuilder)
@@ -107,7 +112,12 @@ let rec emit_expr t = function
           List.map (emit_aexp t) args |> remove_nones |> Array.of_list
         in
         let llval = Llvm.build_call f args "" t.llbuilder in
-        Vartbl.add t.llvals dest llval;
+        begin match transl_ty t.llctx (Var.ty dest) with
+        | None -> ()
+        | Some _ ->
+           let loc = Vartbl.find t.llvals dest in
+           ignore (Llvm.build_store llval loc t.llbuilder);
+        end;
         emit_expr t next
      end
   | ANF.Let_strcmp(dest, lhs, rhs, next) ->
@@ -119,7 +129,8 @@ let rec emit_expr t = function
         let llval =
           Llvm.build_call t.prelude.strcmp [|lhs; rhs|] "" t.llbuilder
         in
-        Vartbl.add t.llvals dest llval;
+        let loc = Vartbl.find t.llvals dest in
+        ignore (Llvm.build_store llval loc t.llbuilder);
         emit_expr t next
      end
   | ANF.Let_cont(bbname, cont, next) ->
@@ -177,6 +188,12 @@ let emit_module llctx name prog =
       }
     in
     List.iter (function
+        | ANF.External(name, ty) ->
+           begin match transl_ty llctx ty with
+           | Some ty ->
+              ignore (Llvm.declare_function name ty llmod)
+           | None -> failwith "External symbol not a function!"
+           end
         | ANF.Fun fun_def ->
            emit_fun prelude llmod fun_def
       ) prog.ANF.decls;

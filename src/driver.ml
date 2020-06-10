@@ -2,10 +2,10 @@ let ( let+ ) m f = Result.map f m
 let ( let* ) = Result.bind
 
 let compile prog =
-  let* (prog, cs, tys) =
+  let* (prog, _, tys) =
     Elab.elab prog |> Result.map_error Elab.string_of_error
   in
-  let* () = Constraint.solve_many (Constraint.Vartbl.create 100) cs in
+  let* () = Solve.solve prog in
   let+ prog = ANF.compile tys prog in
   Llvmgen.emit_module (Llvm.global_context ()) "main" prog
 
