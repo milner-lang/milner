@@ -104,6 +104,14 @@ let rec emit_expr t = function
   | ANF.Continue (Block bb) ->
      let bb = Hashtbl.find t.bbs bb in
      ignore (Llvm.build_br bb t.llbuilder)
+  | ANF.Let_aexp(dest, aexp, next) ->
+     begin match emit_aexp t aexp with
+     | None -> ()
+     | Some llval ->
+        let loc = Vartbl.find t.llvals dest in
+        ignore (Llvm.build_store llval loc t.llbuilder)
+     end;
+     emit_expr t next
   | ANF.Let_app(dest, f, args, next) ->
      begin match emit_aexp t f with
      | None -> failwith "Unreachable: Function is not erased"

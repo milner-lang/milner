@@ -18,6 +18,7 @@ type cont = Block of int
 type expr =
   | Switch of aexp * cont IntMap.t * cont
   | Continue of cont
+  | Let_aexp of ns Var.t * aexp * expr
   | Let_app of ns Var.t * aexp * aexp list * expr
   | Let_strcmp of ns Var.t * aexp * aexp * expr
   | Let_cont of int * expr * expr
@@ -112,13 +113,16 @@ let get_vars m s =
 let add_var v s =
   Ok ((), L.singleton v), s
 
-let refresh vars =
-  iterM (fun var ->
-      let* var' = fresh (Var.ty var)
-      and* s = get_state in
-      let+ () = add_var var' in
-      Hashtbl.add s.var_map var var'
-    ) vars
+let refresh = function
+  | [] -> return None
+  | (var :: _) as vars ->
+     let* var' = fresh (Var.ty var)
+     and* s = get_state in
+     let+ () = add_var var'
+     and+ () =
+       iterM (fun var -> return (Hashtbl.add s.var_map var var')) vars
+     in
+     Some var'
 
 let find_var var s =
   match Hashtbl.find_opt s.var_map var with
@@ -137,22 +141,27 @@ let prelude_tys s = (Ok (s.prelude_tys, L.empty), s)
     http://moscova.inria.fr/~maranget/papers/ml05e-maranget.pdf *)
 
 type row = {
-    pats : Typed.pat list;
+    pats : (Typed.pat * ns Var.t option) list;
     action : cont;
   }
 
 type matrix = row list
 
-type refutable_type = Int_pat | Str_pat
+type refutability =
+  | Irrefutable of ns Var.t option list
+  | Int_pat of ns Var.t option * int
+  | Str_pat of ns Var.t option * int
 
-let rec find_refutable_pat idx = function
-  | [] -> None
-  | Typed.{ pat_node = Int_pat _; pat_vars } :: _ ->
-     Some (Int_pat, pat_vars, idx)
-  | Typed.{ pat_node = Str_pat _; pat_vars } :: _ ->
-     Some (Str_pat, pat_vars, idx)
-  | Typed.{ pat_node = Wild_pat; _ } :: pats ->
-     find_refutable_pat (idx + 1) pats
+let find_refutable_pat =
+  let rec loop idx wilds = function
+    | [] -> Irrefutable(List.rev wilds)
+    | (Typed.{ pat_node = Int_pat _; _ }, var) :: _ ->
+       Int_pat(var, idx)
+    | (Typed.{ pat_node = Str_pat _; _ }, var) :: _ ->
+       Str_pat(var, idx)
+    | (Typed.{ pat_node = Wild_pat; _ }, var) :: pats ->
+       loop (idx + 1) (var :: wilds) pats
+  in loop 0 []
 
 (** [split idx list] splits [list] at position [idx] if [idx] is in bounds,
     returning [(ls, x, rs)] where [List.rev_append ls (x :: rs)] = [list]. *)
@@ -171,10 +180,10 @@ let specialize_int idx occs mat =
   let occs = List.rev_append loccs roccs in
   let+ map, otherwise =
     fold_leftM (fun (map, otherwise) row ->
-        let lpats, pat, rpats = split idx row.pats in
-        let row = { row with pats = List.rev_append lpats rpats } in
+        let lpats, (pat, _), rpats = split idx row.pats in
         match pat.Typed.pat_node with
         | Typed.Int_pat(_, n) ->
+           let row = { row with pats = List.rev_append lpats rpats } in
            begin match IntMap.find_opt n map with
            | None -> return (IntMap.add n [row] map, otherwise)
            | Some rows -> return (IntMap.add n (row :: rows) map, otherwise)
@@ -183,17 +192,17 @@ let specialize_int idx occs mat =
         | _ -> assert false
       ) (IntMap.empty, []) mat
   in
-  (occ, occs, map, otherwise)
+  (occ, occs, map, List.rev otherwise)
 
 let specialize_str idx occs mat =
   let loccs, occ, roccs = split idx occs in
   let occs = List.rev_append loccs roccs in
   let+ map, otherwise =
     fold_leftM (fun (map, otherwise) row ->
-        let lpats, pat, rpats = split idx row.pats in
-        let row = { row with pats = List.rev_append lpats rpats } in
+        let lpats, (pat, _), rpats = split idx row.pats in
         match pat.Typed.pat_node with
         | Typed.Str_pat s ->
+           let row = { row with pats = List.rev_append lpats rpats } in
            begin match StrMap.find_opt s map with
            | None -> return (StrMap.add s [row] map, otherwise)
            | Some rows -> return (StrMap.add s (row :: rows) map, otherwise)
@@ -202,36 +211,53 @@ let specialize_str idx occs mat =
         | _ -> assert false
       ) (StrMap.empty, []) mat
   in
-  (occ, occs, map, otherwise)
+  (occ, occs, map, List.rev otherwise)
+
+let compile_irrefutable expr occs wilds =
+  let rec loop expr = function
+    | [], [] -> expr
+    | occ :: occs, Some var :: wilds ->
+       loop (Let_aexp(var, occ, expr)) (occs, wilds)
+    | _ :: occs, None :: wilds -> loop expr (occs, wilds)
+    | _ :: _, [] -> assert false
+    | [], _ :: _ -> assert false
+  in
+  loop expr (occs, wilds)
 
 let rec compile_matrix occs mat =
   match mat with
   | [] -> throw "Incomplete pattern match"
   | row :: mat' ->
-     match find_refutable_pat 0 row.pats with
-     | None ->
+     match find_refutable_pat row.pats with
+     | Irrefutable wilds ->
         begin match mat' with
-        | [] -> return (Continue row.action)
+        | [] -> return (compile_irrefutable (Continue row.action) occs wilds)
         | _ :: _ -> throw "Unreachable code"
         end
-     | Some (Int_pat, _, idx) ->
-        let* occ, occs, map, otherwise = specialize_int idx occs mat in
+     | Int_pat(pat_var, idx) ->
+        let* occ, occs', map, otherwise = specialize_int idx occs mat in
         let+ blocks, jumptable =
           IntMap.fold (fun n mat acc ->
               let+ blocks, map = acc
-              and+ branch = compile_matrix occs (List.rev mat)
+              and+ branch = compile_matrix occs' (List.rev mat)
               and+ block_id = fresh_block in
               ((block_id, branch) :: blocks, IntMap.add n (Block block_id) map)
             ) map (return ([], IntMap.empty))
         and+ default_id = fresh_block
-        and+ default = compile_matrix occs (List.rev otherwise) in
-        List.fold_right (fun (block_id, branch) expr ->
-            Let_cont(block_id, branch, expr)
-          ) blocks
-          (Let_cont(default_id, default,
-                    Switch(occ, jumptable, Block default_id)))
+        and+ default = compile_matrix occs otherwise in
+        let expr =
+          List.fold_right (fun (block_id, branch) expr ->
+              Let_cont(block_id, branch, expr)
+            ) blocks
+            (Let_cont(default_id, default,
+                      Switch(occ, jumptable, Block default_id)))
+        in
+        begin match pat_var with
+        | None -> expr
+        | Some var -> Let_aexp(var, occ, expr)
+        end
 
-     | Some (Str_pat, _, idx) ->
+     | Str_pat(pat_var, idx) ->
         (* When pattern matching on a string, use a binary search *)
         let rec make_binary_search occ default array lo hi =
           if lo = hi then
@@ -256,27 +282,32 @@ let rec compile_matrix occs mat =
                     Let_cont(
                         right_id, right,
                         (* default branch = less *)
-                        (* FIXME: SIGV when compiling to LLVM *)
                         Switch(Var test_result, jumptable, Block left_id))))
         in
-        let* occ, occs, map, otherwise = specialize_str idx occs mat in
+        let* occ, occs', map, otherwise = specialize_str idx occs mat in
         let* blocks, jumptable =
           StrMap.fold (fun n mat acc ->
               let+ blocks, map = acc
-              and+ branch = compile_matrix occs (List.rev mat)
+              and+ branch = compile_matrix occs' (List.rev mat)
               and+ block_id = fresh_block in
               ((block_id, branch) :: blocks, StrMap.add n (Block block_id) map)
             ) map (return ([], StrMap.empty))
         and* default_id = fresh_block
-        and* default = compile_matrix occs (List.rev otherwise) in
+        and* default = compile_matrix occs otherwise in
         let array = Array.of_list (StrMap.bindings jumptable) in
         let+ search =
           make_binary_search occ (Continue (Block default_id))
             array 0 (Array.length array)
         in
-        List.fold_right (fun (block_id, branch) expr ->
-            Let_cont(block_id, branch, expr)
-          ) blocks (Let_cont(default_id, default, search))
+        let expr =
+          List.fold_right (fun (block_id, branch) expr ->
+              Let_cont(block_id, branch, expr)
+            ) blocks (Let_cont(default_id, default, search))
+        in
+        begin match pat_var with
+        | None -> expr
+        | Some var -> Let_aexp(var, occ, expr)
+        end
 
 let rec compile_expr exp k =
   match exp with
@@ -311,11 +342,14 @@ let compile_fun fun_def =
     | [] -> return (List.rev mat, List.rev exprs)
     | clause :: clauses ->
        let* cont_id = fresh_block in
-       let* () =
-         iterM (fun pat -> refresh pat.Typed.pat_vars) clause.Typed.clause_lhs
+       let* pats =
+         mapM (fun pat ->
+             let+ var = refresh pat.Typed.pat_vars in
+             (pat, var)
+           ) clause.Typed.clause_lhs
        in
        create_matrix
-         ({ pats = clause.Typed.clause_lhs; action = Block cont_id } :: mat)
+         ({ pats; action = Block cont_id } :: mat)
          ((cont_id, clause.Typed.clause_rhs) :: exprs)
          clauses
   in
