@@ -5,16 +5,18 @@ module Symtable = ScopedMap.Make(String)
 type error =
   | Redefined of string
   | Undefined of string
+  | Unification
   | Unimplemented of string
 
 let string_of_error = function
   | Redefined s -> "Redefined " ^ s
   | Undefined s -> "Undefined " ^ s
+  | Unification -> "Unification"
   | Unimplemented s -> "Unimplemented " ^ s
 
 type state = {
     tycons : (string, Type.t) Hashtbl.t;
-    funcs : (string, int * Type.t) Hashtbl.t;
+    funcs : (string, Type.forall) Hashtbl.t;
     ty_gen : UnionFind.gen;
     var_gen : Typed.ns Var.gen;
   }
@@ -118,7 +120,7 @@ let poly m env s =
 
 type var_kind =
   | Local of Typed.ns Var.t
-  | Global of (int * Type.t)
+  | Global of Type.forall
 
 let find name env s =
   match Symtable.find name env with
@@ -154,8 +156,8 @@ let rec read_ty = function
      create_ty (Type.Fun { dom; codom })
 
 let inst n ty _ s =
-  let ty, ty_gen = Type.inst s.ty_gen n ty in
-  (Ok { data = ty; ex = L.empty; c = L.empty }, { s with ty_gen })
+  let ty_args, ty, ty_gen = Type.inst s.ty_gen n ty in
+  (Ok { data = (ty_args, ty); ex = L.empty; c = L.empty }, { s with ty_gen })
 
 let decl_fun name ty _ s =
   if Hashtbl.mem s.funcs name then
@@ -245,10 +247,10 @@ let rec expr_has_ty expr ty =
   | Ast.Var_expr name ->
      let* var = find name in
      begin match var with
-     | Global (poly, ty') ->
-        let* insted = inst poly ty' in
-        let+ () = constrain (Type.Eq(insted, ty)) in
-        Typed.Global_expr name
+     | Global (Type.Forall(poly, ty')) ->
+        let* ty_args, inst'ed = inst poly ty' in
+        let+ () = constrain (Type.Eq(inst'ed, ty)) in
+        Typed.Global_expr(name, ty_args)
      | Local var ->
         let+ () = constrain (Type.Eq(Var.ty var, ty)) in
         Typed.Var_expr var
@@ -280,15 +282,16 @@ let fun_has_ty func ty =
   let* clauses, ex, cs =
     poly (mapM (fun clause -> clause_has_ty clause ty) func.Ast.fun_clauses)
   in
-  let+ () = match Solve.solve_many cs with
-    | Ok () -> return ()
-    | Error _ -> throw (Unimplemented "")
-  in
-  Typed.{
-      fun_name = func.Ast.fun_name;
-      fun_ty = Type.Forall(ex, cs, ty);
-      fun_clauses = clauses;
-  }
+  match Solve.solve_many cs with
+    | Error _ -> throw Unification
+    | Ok () ->
+       let ty_scheme = Type.gen ex ty in
+       return
+         (Typed.{
+            fun_name = func.Ast.fun_name;
+            fun_ty = ty_scheme;
+            fun_clauses = clauses;
+         })
 
 let elab_program prog =
   let+ decls =
@@ -296,23 +299,26 @@ let elab_program prog =
         match next.Ast.annot_item with
         | Ast.External(name, ty) ->
            let* ty = read_ty ty.Ast.annot_item in
-           let+ () = decl_fun name (0, ty) in
+           let+ () = decl_fun name (Type.Forall(0, ty)) in
            Typed.External(name, ty) :: decls
         | Ast.Forward_decl(name, ty) ->
            let* ty = read_ty ty.Ast.annot_item in
-           let+ () = decl_fun name (0, ty) in
+           let+ () = decl_fun name (Type.Forall(0, ty)) in
            decls
         | Ast.Fun fun_def ->
-           let* ty =
+           let* ty, declared =
              let* opt = get_fun fun_def.Ast.fun_name in
              match opt with
-             | Some (_, ty) -> return ty
-             | None ->
-                let* ty = fresh_tvar in
-                let+ () = decl_fun fun_def.Ast.fun_name (0, ty) in
-                ty
+             | Some (Type.Forall(_, ty)) -> return (ty, true)
+             | None -> let+ ty = fresh_tvar in ty, false
            in
-           let+ fun_def = fun_has_ty fun_def ty in
+           let* fun_def = fun_has_ty fun_def ty in
+           let+ () =
+             if declared then
+               return ()
+             else
+               decl_fun fun_def.Typed.fun_name fun_def.Typed.fun_ty
+           in
            Typed.Fun fun_def :: decls
       ) [] prog.Ast.decls
   in

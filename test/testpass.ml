@@ -8,8 +8,10 @@ let () =
           match Lexer.read lexbuf with
           | Error _ -> failwith "Test failed: Parse error"
           | Ok program ->
-             match Elab.elab program with
-             | Error _ -> failwith "Test failed: Constraint gen"
+             match
+               Elab.elab program |> Result.map_error Elab.string_of_error
+             with
+             | Error e -> failwith ("Test failed: Constraint gen " ^ e)
              | Ok prog ->
                 match Ir.compile prog with
                 | Error e -> failwith ("Test failed: ANF: " ^ e)

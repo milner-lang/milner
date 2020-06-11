@@ -316,7 +316,7 @@ let rec compile_expr exp k =
              Let_app(v, f, args, body)
            ) args []
        )
-  | Typed.Global_expr name -> k (Global name)
+  | Typed.Global_expr(name, _) -> k (Global name)
   | Typed.Int_expr(_, n) -> k (Int32 n) (* Treat all ints as int32 for now *)
   | Typed.Str_expr s -> k (String s)
   | Typed.Seq_expr(e1, e2) ->
@@ -327,7 +327,7 @@ let rec compile_expr exp k =
      k (Var var)
 
 let compile_fun fun_def =
-  let Type.Forall(_, _, ty) = fun_def.Typed.fun_ty in
+  let Type.Forall(_, ty) = fun_def.Typed.fun_ty in
   let arity = match UnionFind.find ty with
     | UnionFind.Value (Type.Fun fun_ty) -> fun_ty
     | _ -> assert false

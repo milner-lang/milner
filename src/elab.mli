@@ -1,6 +1,7 @@
 type error =
   | Redefined of string
   | Undefined of string
+  | Unification
   | Unimplemented of string
 
 val string_of_error : error -> string

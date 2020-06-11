@@ -15,7 +15,7 @@ and pat_node =
 
 type expr =
   | Apply_expr of Type.t * expr * expr list
-  | Global_expr of string
+  | Global_expr of string * Type.t array
   | Int_expr of Type.t * int
   | Str_expr of string
   | Seq_expr of expr * expr
