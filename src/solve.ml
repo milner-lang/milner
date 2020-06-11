@@ -27,29 +27,12 @@ end
 open Mon
 open Monad.List(Mon)
 
-let solve_constraints tctx = function
+let solve_constraints = function
   | Type.Eq(t1, t2) -> UnionFind.union Type.unify (Ok ()) t1 t2
-  | Inst(var, t) ->
-     begin match Hashtbl.find_opt tctx var with
-     | None -> Error ("Var not found " ^ var)
-     | Some ty -> UnionFind.union Type.unify (Ok ()) ty t
-     end
   | Nat _ -> Error "Unimplemented"
 
-let rec solve_many tctx = function
+let rec solve_many = function
   | [] -> Ok ()
   | c :: cs ->
-     let* () = solve_constraints tctx c in
-     solve_many tctx cs
-
-let solve program =
-  let tctx = Hashtbl.create 100 in
-  iterM (fun next ->
-      match next with
-      | Typed.Fun fun_def ->
-         let Forall(_, cs, ty) = fun_def.Typed.fun_ty in
-         Hashtbl.add tctx fun_def.Typed.fun_name ty;
-         solve_many tctx cs
-      | Typed.External(name, ty) ->
-         return (Hashtbl.add tctx name ty)
-    ) program.Typed.decls
+     let* () = solve_constraints c in
+     solve_many cs

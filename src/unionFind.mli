@@ -2,7 +2,7 @@ type 'a t
 
 type 'a representative =
   | Value of 'a
-  | Root of 'a t
+  | Root of int * 'a t
 
 val find : 'a t -> 'a representative
 
