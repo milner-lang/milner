@@ -14,7 +14,7 @@ let string_of_error = function
 
 type state = {
     tycons : (string, Type.t) Hashtbl.t;
-    funcs : (string, Type.t) Hashtbl.t;
+    funcs : (string, int * Type.t) Hashtbl.t;
     ty_gen : UnionFind.gen;
     var_gen : Typed.ns Var.gen;
   }
@@ -118,14 +118,14 @@ let poly m env s =
 
 type var_kind =
   | Local of Typed.ns Var.t
-  | Global of string
+  | Global of (int * Type.t)
 
 let find name env s =
   match Symtable.find name env with
   | Some var -> (Ok { data = Local var; ex = L.empty; c = L.empty }, s)
   | None ->
      match Hashtbl.find_opt s.funcs name with
-     | Some _ -> (Ok { data = Global name; ex = L.empty; c = L.empty }, s)
+     | Some ty -> (Ok { data = Global ty; ex = L.empty; c = L.empty }, s)
      | None -> (Error (Undefined name), s)
 
 let find_tcon name _ s =
@@ -152,6 +152,10 @@ let rec read_ty = function
      let* dom = mapM (fun x -> read_ty x.Ast.annot_item) dom in
      let* codom = read_ty codom.Ast.annot_item in
      create_ty (Type.Fun { dom; codom })
+
+let inst n ty _ s =
+  let ty, ty_gen = Type.inst s.ty_gen n ty in
+  (Ok { data = ty; ex = L.empty; c = L.empty }, { s with ty_gen })
 
 let decl_fun name ty _ s =
   if Hashtbl.mem s.funcs name then
@@ -238,11 +242,12 @@ let rec expr_has_ty expr ty =
      let* e1 = expr_has_ty e1.annot_item unit in
      let+ e2 = expr_has_ty e2.annot_item ty in
      Typed.Seq_expr(e1, e2)
-  | Ast.Var_expr var ->
-     let* var = find var in
+  | Ast.Var_expr name ->
+     let* var = find name in
      begin match var with
-     | Global name ->
-        let+ () = constrain (Type.Inst(name, ty)) in
+     | Global (poly, ty') ->
+        let* insted = inst poly ty' in
+        let+ () = constrain (Type.Eq(insted, ty)) in
         Typed.Global_expr name
      | Local var ->
         let+ () = constrain (Type.Eq(Var.ty var, ty)) in
@@ -272,8 +277,12 @@ let clause_has_ty clause ty =
   Typed.{ clause_lhs = lhs; clause_vars = map; clause_rhs = rhs }
 
 let fun_has_ty func ty =
-  let+ clauses, ex, cs =
+  let* clauses, ex, cs =
     poly (mapM (fun clause -> clause_has_ty clause ty) func.Ast.fun_clauses)
+  in
+  let+ () = match Solve.solve_many cs with
+    | Ok () -> return ()
+    | Error _ -> throw (Unimplemented "")
   in
   Typed.{
       fun_name = func.Ast.fun_name;
@@ -287,20 +296,20 @@ let elab_program prog =
         match next.Ast.annot_item with
         | Ast.External(name, ty) ->
            let* ty = read_ty ty.Ast.annot_item in
-           let+ () = decl_fun name ty in
+           let+ () = decl_fun name (0, ty) in
            Typed.External(name, ty) :: decls
         | Ast.Forward_decl(name, ty) ->
            let* ty = read_ty ty.Ast.annot_item in
-           let+ () = decl_fun name ty in
+           let+ () = decl_fun name (0, ty) in
            decls
         | Ast.Fun fun_def ->
            let* ty =
              let* opt = get_fun fun_def.Ast.fun_name in
              match opt with
-             | Some ty -> return ty
+             | Some (_, ty) -> return ty
              | None ->
                 let* ty = fresh_tvar in
-                let+ () = decl_fun fun_def.Ast.fun_name ty in
+                let+ () = decl_fun fun_def.Ast.fun_name (0, ty) in
                 ty
            in
            let+ fun_def = fun_has_ty fun_def ty in
