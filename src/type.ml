@@ -27,7 +27,7 @@ type constraints =
   | Eq of t * t
   | Nat of t
 
-type forall = Forall of t list * constraints list * t
+type forall = Forall of int * t
 
 let prim_eq lhs rhs = match lhs, rhs with
   | Cstr, Cstr -> true
@@ -83,7 +83,7 @@ let rec rename namegen ty =
      ignore (
          UnionFind.union unify (Ok ()) tvar (UnionFind.wrap (Rigid namegen))
        );
-     namegen
+     namegen + 1
 
 let gen tvs ty =
   let n = rename 0 ty in
@@ -97,7 +97,7 @@ let gen tvs ty =
          | Ok () -> ()
          | Error _ -> assert false
     ) tvs;
-  n, ty
+  Forall(n, ty)
 
 let inst gen n ty =
   let gen = ref gen in
@@ -116,4 +116,4 @@ let inst gen n ty =
     | Value (Rigid r) -> arr.(r)
     | Root _ -> assert false
   in
-  loop ty, !gen
+  arr, loop ty, !gen
