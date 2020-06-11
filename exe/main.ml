@@ -9,13 +9,16 @@ let emit_llvm =
 
 let triple =
   let open Llvm_target in
-  Arg.(value @@ opt string (Target.default_triple ()) @@ info ["target"])
+  let doc = "The target triple" in
+  Arg.(value @@ opt string (Target.default_triple ())
+       @@ info ~docv:"TARGET" ~doc ["target"])
 
 let in_files =
-  Arg.(non_empty @@ pos_all string [] @@ info [])
+  let doc = "The file to compile" in
+  Arg.(non_empty @@ pos_all string [] @@ info ~docv:"FILE" ~doc [])
 
 let out_file =
-  Arg.(value @@ opt string "a.o" @@ info ["o"; "out"])
+  Arg.(value @@ opt string "a.o" @@ info ["o"; "output"])
 
 let compile triple emit_llvm out_file = function
   | [] -> assert false
@@ -34,8 +37,8 @@ let compile triple emit_llvm out_file = function
            llmod CodeGenFileType.ObjectFile out_file mach
        )
      with
-     | Error e -> failwith e
      | Ok () -> ()
+     | Error e -> output_string stderr (e ^ "\n")
 
 let cmd =
   Term.(const compile $ triple $ emit_llvm $ out_file $ in_files, info "")

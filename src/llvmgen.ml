@@ -1,7 +1,7 @@
 module Vartbl =
   Hashtbl.Make(
       struct
-        type t = ANF.ns Var.t
+        type t = Ir.ns Var.t
         let hash = Var.hash
         let equal lhs rhs = Var.compare lhs rhs = 0
       end)
@@ -70,41 +70,41 @@ let real_param_idx idx list =
 
 (** The unit type is erased. *)
 let emit_aexp t = function
-  | ANF.Param idx ->
+  | Ir.Param idx ->
      (* If the variable does not map to anything, it must have an erased type *)
      Option.map (Llvm.param t.llfun) (real_param_idx idx t.real_params)
-  | ANF.Global name ->
+  | Ir.Global name ->
      begin match Llvm.lookup_function name t.llmod with
      | None -> assert false
      | Some func -> Some func
      end
-  | ANF.Int32 n -> Some (Llvm.const_int (Llvm.i32_type t.llctx) n)
-  | ANF.String s ->
+  | Ir.Int32 n -> Some (Llvm.const_int (Llvm.i32_type t.llctx) n)
+  | Ir.String s ->
      Some (Llvm.build_global_stringptr s "" t.llbuilder)
-  | ANF.Var v ->
+  | Ir.Var v ->
      Option.map (fun llval -> Llvm.build_load llval "" t.llbuilder)
        (Vartbl.find_opt t.llvals v)
-  | ANF.Unit -> None
+  | Ir.Unit -> None
 
 let rec emit_expr t = function
-  | ANF.Switch(scrut, cases, Block default) ->
+  | Ir.Switch(scrut, cases, Block default) ->
      let default = Hashtbl.find t.bbs default in
      begin match emit_aexp t scrut with
      | None -> ignore (Llvm.build_br default t.llbuilder)
      | Some scrut ->
         let sw =
           Llvm.build_switch scrut default
-            (ANF.IntMap.cardinal cases) t.llbuilder
+            (Ir.IntMap.cardinal cases) t.llbuilder
         in
-        ANF.IntMap.iter (fun idx (ANF.Block bb) ->
+        Ir.IntMap.iter (fun idx (Ir.Block bb) ->
             let idx = Llvm.const_int (Llvm.i32_type t.llctx) idx in
             let bb = Hashtbl.find t.bbs bb in
             Llvm.add_case sw idx bb) cases
      end
-  | ANF.Continue (Block bb) ->
+  | Ir.Continue (Block bb) ->
      let bb = Hashtbl.find t.bbs bb in
      ignore (Llvm.build_br bb t.llbuilder)
-  | ANF.Let_aexp(dest, aexp, next) ->
+  | Ir.Let_aexp(dest, aexp, next) ->
      begin match emit_aexp t aexp with
      | None -> ()
      | Some llval ->
@@ -112,7 +112,7 @@ let rec emit_expr t = function
         ignore (Llvm.build_store llval loc t.llbuilder)
      end;
      emit_expr t next
-  | ANF.Let_app(dest, f, args, next) ->
+  | Ir.Let_app(dest, f, args, next) ->
      begin match emit_aexp t f with
      | None -> failwith "Unreachable: Function is not erased"
      | Some f ->
@@ -128,7 +128,7 @@ let rec emit_expr t = function
         end;
         emit_expr t next
      end
-  | ANF.Let_strcmp(dest, lhs, rhs, next) ->
+  | Ir.Let_strcmp(dest, lhs, rhs, next) ->
      begin match emit_aexp t lhs, emit_aexp t rhs with
      | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
      | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
@@ -141,7 +141,7 @@ let rec emit_expr t = function
         ignore (Llvm.build_store llval loc t.llbuilder);
         emit_expr t next
      end
-  | ANF.Let_cont(bbname, cont, next) ->
+  | Ir.Let_cont(bbname, cont, next) ->
      let bb = Llvm.append_block t.llctx (Int.to_string bbname) t.llfun in
      Hashtbl.add t.bbs bbname bb;
      emit_expr t next;
@@ -149,14 +149,14 @@ let rec emit_expr t = function
      Llvm.position_at_end bb t.llbuilder;
      emit_expr t cont;
      Llvm.position_at_end curr_bb t.llbuilder
-  | ANF.Return aexp ->
+  | Ir.Return aexp ->
      match emit_aexp t aexp with
      | None -> ignore (Llvm.build_ret_void t.llbuilder)
      | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
 
 let emit_fun prelude llmod fun_def =
   let llctx = Llvm.module_context llmod in
-  let real_params, ret_ty = transl_fun_ty llctx fun_def.ANF.fun_ty in
+  let real_params, ret_ty = transl_fun_ty llctx fun_def.Ir.fun_ty in
   let param_tys = real_params |> remove_nones |> Array.of_list in
   let lltype = Llvm.function_type ret_ty param_tys in
   let llfun = Llvm.define_function fun_def.fun_name lltype llmod in
@@ -180,8 +180,8 @@ let emit_fun prelude llmod fun_def =
       | Some mach_ty ->
          let llval = Llvm.build_alloca mach_ty "" llbuilder in
          Vartbl.add t.llvals var llval
-    ) fun_def.ANF.fun_vars;
-  emit_expr t fun_def.ANF.fun_body
+    ) fun_def.Ir.fun_vars;
+  emit_expr t fun_def.Ir.fun_body
 
 let emit_module llctx name prog =
   let llmod = Llvm.create_module llctx name in
@@ -196,15 +196,15 @@ let emit_module llctx name prog =
       }
     in
     List.iter (function
-        | ANF.External(name, ty) ->
+        | Ir.External(name, ty) ->
            begin match transl_ty llctx ty with
            | Some ty ->
               ignore (Llvm.declare_function name ty llmod)
            | None -> failwith "External symbol not a function!"
            end
-        | ANF.Fun fun_def ->
+        | Ir.Fun fun_def ->
            emit_fun prelude llmod fun_def
-      ) prog.ANF.decls;
+      ) prog.Ir.decls;
     llmod
   with
   | e ->
