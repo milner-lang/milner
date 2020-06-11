@@ -2,8 +2,8 @@ let ( let+ ) m f = Result.map f m
 let ( let* ) = Result.bind
 
 let compile prog =
-  let* prog = Elab.elab prog |> Result.map_error Elab.string_of_error in
-  let* () = Solve.solve prog in
+  let* prog, gen = Elab.elab prog |> Result.map_error Elab.string_of_error in
+  let* () = Solve.solve gen prog in
   let+ prog = Ir.compile prog in
   Llvmgen.emit_module (Llvm.global_context ()) "main" prog
 

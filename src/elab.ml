@@ -14,7 +14,7 @@ let string_of_error = function
 
 type state = {
     tycons : (string, Type.t) Hashtbl.t;
-    funcs : (string, Type.t) Hashtbl.t;
+    funcs : (string, Type.t list * Type.t) Hashtbl.t;
     ty_gen : UnionFind.gen;
     var_gen : Typed.ns Var.gen;
   }
@@ -45,10 +45,10 @@ let init_state () =
     tycons }
 
 let run m =
-  let r, _ = m Symtable.empty (init_state ()) in
+  let r, s = m Symtable.empty (init_state ()) in
   match r with
   | Error e -> Error e
-  | Ok w -> Ok w.data
+  | Ok w -> Ok (w.data, s.ty_gen)
 
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
@@ -242,8 +242,9 @@ let rec expr_has_ty expr ty =
      let* var = find var in
      begin match var with
      | Global name ->
-        let+ () = constrain (Type.Inst(name, ty)) in
-        Typed.Global_expr name
+        let r = ref None in
+        let+ () = constrain (Type.Inst(name, ty, r)) in
+        Typed.Global_expr(name, r)
      | Local var ->
         let+ () = constrain (Type.Eq(Var.ty var, ty)) in
         Typed.Var_expr var
@@ -287,20 +288,20 @@ let elab_program prog =
         match next.Ast.annot_item with
         | Ast.External(name, ty) ->
            let* ty = read_ty ty.Ast.annot_item in
-           let+ () = decl_fun name ty in
+           let+ () = decl_fun name ([], ty) in
            Typed.External(name, ty) :: decls
         | Ast.Forward_decl(name, ty) ->
            let* ty = read_ty ty.Ast.annot_item in
-           let+ () = decl_fun name ty in
+           let+ () = decl_fun name ([], ty) in
            decls
         | Ast.Fun fun_def ->
            let* ty =
              let* opt = get_fun fun_def.Ast.fun_name in
              match opt with
-             | Some ty -> return ty
+             | Some (_, ty) -> return ty
              | None ->
                 let* ty = fresh_tvar in
-                let+ () = decl_fun fun_def.Ast.fun_name ty in
+                let+ () = decl_fun fun_def.Ast.fun_name ([], ty) in
                 ty
            in
            let+ fun_def = fun_has_ty fun_def ty in

@@ -45,6 +45,7 @@ let rec transl_ty llctx ty =
      Some (Llvm.function_type ret params)
   | UnionFind.Value (Type.Pointer _) ->
      Some (Llvm.pointer_type (Llvm.i8_type llctx))
+  | UnionFind.Value (Type.Rigid _) -> assert false
   | UnionFind.Root _ -> failwith "Unsolved type"
 
 (** In the parameter type list, the unit type translates to None. In the return

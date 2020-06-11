@@ -10,8 +10,8 @@ let () =
           | Ok program ->
              match Elab.elab program with
              | Error _ -> failwith "Test failed: Constraint gen"
-             | Ok prog ->
-                match Solve.solve prog with
+             | Ok (prog, gen) ->
+                match Solve.solve gen prog with
                 | Error e ->
                    (* Constraint solver not complete yet *)
                    failwith ("Test failed: Solver: " ^ e)

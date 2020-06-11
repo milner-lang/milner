@@ -9,22 +9,22 @@ and 'a parent =
 
 type 'a representative =
   | Value of 'a
-  | Root of 'a t
+  | Root of int * 'a t
 
 (** Implements the path-halving find algorithm *)
 let rec find node = match node.parent with
   | PValue a -> Value a
-  | PRoot _ -> Root node
+  | PRoot id -> Root(id, node)
   | PNode node' ->
      node.parent <- node'.parent;
      find node'
 
 let union unify ok lhs rhs =
   match find lhs, find rhs with
-  | Root lhs, Root rhs ->
+  | Root (_, lhs), Root (_, rhs) ->
      rhs.parent <- PNode lhs;
      ok
-  | Value a, Root node | Root node, Value a ->
+  | Value a, Root (_, node) | Root (_, node), Value a ->
      node.parent <- PValue a;
      ok
   | Value a, Value b -> unify a b
