@@ -77,7 +77,7 @@ let rec loop lexbuf checkpoint = match checkpoint with
      loop lexbuf (I.offer checkpoint (token, startp, endp))
   | I.Shifting _ | I.AboutToReduce _ ->
      loop lexbuf (I.resume checkpoint)
-  | I.HandlingError _ -> Result.Error ""
+  | I.HandlingError _ -> Result.Error "Syntax error"
   | I.Accepted v -> Ok v
   | I.Rejected -> assert false
 

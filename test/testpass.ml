@@ -10,13 +10,13 @@ let () =
           | Ok program ->
              match Elab.elab program with
              | Error _ -> failwith "Test failed: Constraint gen"
-             | Ok (prog, _, tys) ->
+             | Ok prog ->
                 match Solve.solve prog with
                 | Error e ->
                    (* Constraint solver not complete yet *)
                    failwith ("Test failed: Solver: " ^ e)
                 | Ok () ->
-                   match ANF.compile tys prog with
+                   match Ir.compile prog with
                    | Error e -> failwith ("Test failed: ANF: " ^ e)
                    | Ok prog ->
                       let llctx = Llvm.global_context () in

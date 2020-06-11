@@ -12,5 +12,5 @@ fun main() =
   puts(cases(0i32));
   puts(cases(1i32));
   puts(str_cases(""));
-  puts(str_cases("Ichi ni san"));
+  puts(str_cases("\tIchi ni san"));
   0i32

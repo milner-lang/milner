@@ -30,7 +30,7 @@ type clause = {
 
 type fun_def = {
     fun_name : string;
-    fun_ty : Constraint.forall;
+    fun_ty : Type.forall;
     fun_clauses : clause list;
   }
 
