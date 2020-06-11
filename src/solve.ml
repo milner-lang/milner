@@ -28,7 +28,7 @@ open Mon
 open Monad.List(Mon)
 
 let solve_constraints tctx = function
-  | Constraint.Eq(t1, t2) -> UnionFind.union Type.unify (Ok ()) t1 t2
+  | Type.Eq(t1, t2) -> UnionFind.union Type.unify (Ok ()) t1 t2
   | Inst(var, t) ->
      begin match Hashtbl.find_opt tctx var with
      | None -> Error ("Var not found " ^ var)

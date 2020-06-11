@@ -22,10 +22,12 @@ and fun_ty = {
     codom : t;
   }
 
-type prelude = {
-    cstr : t;
-    int32 : t;
-  }
+type constraints =
+  | Eq of t * t
+  | Inst of string * t
+  | Nat of t
+
+type forall = Forall of t list * constraints list * t
 
 let prim_eq lhs rhs = match lhs, rhs with
   | Cstr, Cstr -> true
@@ -63,9 +65,3 @@ and unify_fun lhs rhs =
   match loop lhs.dom rhs.dom with
   | Ok () -> UnionFind.union unify (Ok ()) lhs.codom rhs.codom
   | Error e -> Error e
-
-let init =
-  let ty_gen = UnionFind.init_gen in
-  let cstr, ty_gen = UnionFind.wrap ty_gen (Prim Cstr) in
-  let int32, ty_gen = UnionFind.wrap ty_gen (Prim Int32) in
-  { cstr; int32 }, ty_gen

@@ -1,23 +1,20 @@
 type 'a t = {
-    id : int;
     mutable parent : 'a parent;
   }
 
 and 'a parent =
   | PValue of 'a
-  | PRoot
+  | PRoot of int
   | PNode of 'a t
 
 type 'a representative =
   | Value of 'a
   | Root of 'a t
 
-let id t = t.id
-
 (** Implements the path-halving find algorithm *)
 let rec find node = match node.parent with
   | PValue a -> Value a
-  | PRoot -> Root node
+  | PRoot _ -> Root node
   | PNode node' ->
      node.parent <- node'.parent;
      find node'
@@ -37,7 +34,7 @@ type gen = int
 let init_gen = 0
 
 let fresh gen =
-  ({ id = gen; parent = PRoot }, gen + 1)
+  ({ parent = PRoot gen }, gen + 1)
 
-let wrap gen a =
-  ({ id = gen; parent = PValue a }, gen + 1)
+let wrap a =
+  { parent = PValue a }

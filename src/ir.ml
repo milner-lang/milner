@@ -43,20 +43,18 @@ type state = {
     var_gen : ns Var.gen;
     block_gen : int;
     var_map : (Typed.ns Var.t, ns Var.t) Hashtbl.t;
-    prelude_tys : Type.prelude;
   }
 
 type 'a t = state -> ('a * ns Var.t L.t, string) result * state
 
-let init_state prelude_tys = {
+let init_state () = {
     var_gen = Var.init_gen;
     block_gen = 0;
     var_map = Hashtbl.create 100;
-    prelude_tys;
   }
 
-let run prelude_tys action =
-  let r, _ = action (init_state prelude_tys) in
+let run action =
+  let r, _ = action (init_state ()) in
   match r with
   | Error e -> Error e
   | Ok (a, _) -> Ok a
@@ -132,8 +130,6 @@ let find_var var s =
 let fresh_block s =
   (Ok (s.block_gen, L.empty), { s with block_gen = s.block_gen + 1 })
 
-let prelude_tys s = (Ok (s.prelude_tys, L.empty), s)
-
 (** The following pattern matching compilation code uses the algorithm from
     Maranget 2008:
 
@@ -192,7 +188,7 @@ let specialize_int idx occs mat =
         | _ -> assert false
       ) (IntMap.empty, []) mat
   in
-  (occ, occs, map, List.rev otherwise)
+  (occ, occs, IntMap.map List.rev map, List.rev otherwise)
 
 let specialize_str idx occs mat =
   let loccs, occ, roccs = split idx occs in
@@ -211,7 +207,7 @@ let specialize_str idx occs mat =
         | _ -> assert false
       ) (StrMap.empty, []) mat
   in
-  (occ, occs, map, List.rev otherwise)
+  (occ, occs, StrMap.map List.rev map, List.rev otherwise)
 
 let compile_irrefutable expr occs wilds =
   let rec loop expr = function
@@ -239,7 +235,7 @@ let rec compile_matrix occs mat =
         let+ blocks, jumptable =
           IntMap.fold (fun n mat acc ->
               let+ blocks, map = acc
-              and+ branch = compile_matrix occs' (List.rev mat)
+              and+ branch = compile_matrix occs' mat
               and+ block_id = fresh_block in
               ((block_id, branch) :: blocks, IntMap.add n (Block block_id) map)
             ) map (return ([], IntMap.empty))
@@ -265,8 +261,7 @@ let rec compile_matrix occs mat =
           else
             let pivot = lo + (hi - lo) / 2 in
             let test_str, cont = array.(pivot) in
-            let* prelude = prelude_tys in
-            let+ test_result = fresh prelude.Type.int32
+            let+ test_result = fresh (UnionFind.wrap (Type.Prim Type.Int32))
             and+ left_id = fresh_block
             and+ right_id = fresh_block
             and+ left = make_binary_search occ default array lo pivot
@@ -288,7 +283,7 @@ let rec compile_matrix occs mat =
         let* blocks, jumptable =
           StrMap.fold (fun n mat acc ->
               let+ blocks, map = acc
-              and+ branch = compile_matrix occs' (List.rev mat)
+              and+ branch = compile_matrix occs' mat
               and+ block_id = fresh_block in
               ((block_id, branch) :: blocks, StrMap.add n (Block block_id) map)
             ) map (return ([], StrMap.empty))
@@ -332,7 +327,7 @@ let rec compile_expr exp k =
      k (Var var)
 
 let compile_fun fun_def =
-  let Constraint.Forall(_, _, ty) = fun_def.Typed.fun_ty in
+  let Type.Forall(_, _, ty) = fun_def.Typed.fun_ty in
   let arity = match UnionFind.find ty with
     | UnionFind.Value (Type.Fun fun_ty) -> fun_ty
     | _ -> assert false
@@ -372,8 +367,7 @@ let compile_fun fun_def =
     fun_body = body }
 
 let compile_decl = function
-  | Typed.External(name, ty) ->
-     return (External(name, ty))
+  | Typed.External(name, ty) -> return (External(name, ty))
   | Typed.Fun fun_def ->
      let+ fun_def = compile_fun fun_def in
      Fun fun_def
@@ -382,4 +376,4 @@ let compile_program program =
   let+ decls = mapM compile_decl program.Typed.decls in
   { decls }
 
-let compile prelude_tys program = run prelude_tys (compile_program program)
+let compile program = run (compile_program program)

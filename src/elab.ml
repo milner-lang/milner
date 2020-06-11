@@ -17,13 +17,12 @@ type state = {
     funcs : (string, Type.t) Hashtbl.t;
     ty_gen : UnionFind.gen;
     var_gen : Typed.ns Var.gen;
-    prelude_tys : Type.prelude;
   }
 
 type 'a payload = {
     data : 'a;
     ex : Type.t L.t; (** Existential variables *)
-    c : Constraint.t L.t; (** Constraints *)
+    c : Type.constraints L.t; (** Constraints *)
   }
 
 (* In the paper "Hindley-Milner Elaboration in Applicative Style," the wrapped
@@ -37,21 +36,19 @@ type 'a t =
 let throw e _ s = (Error e, s)
 
 let init_state () =
-  let pre, ty_gen = Type.init in
   let tycons = Hashtbl.create 20 in
-  Hashtbl.add tycons "Cstring" pre.cstr;
-  Hashtbl.add tycons "Int32" pre.int32;
-  { ty_gen;
+  Hashtbl.add tycons "Cstring" (UnionFind.wrap (Type.Prim Type.Cstr));
+  Hashtbl.add tycons "Int32" (UnionFind.wrap (Type.Prim Type.Int32));
+  { ty_gen = UnionFind.init_gen;
     var_gen = Var.init_gen;
     funcs = Hashtbl.create 20;
-    tycons;
-    prelude_tys = pre; }
+    tycons }
 
 let run m =
-  let r, s = m Symtable.empty (init_state ()) in
+  let r, _ = m Symtable.empty (init_state ()) in
   match r with
   | Error e -> Error e
-  | Ok w -> Ok (w.data, L.to_list w.c, s.prelude_tys)
+  | Ok w -> Ok w.data
 
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
@@ -141,8 +138,8 @@ let fresh_tvar _ s =
   (Ok { data = ty; ex = L.singleton ty; c = L.empty }, { s with ty_gen })
 
 let create_ty ty _ s =
-  let (ty, ty_gen) = UnionFind.wrap s.ty_gen ty in
-  (Ok { data = ty; ex = L.singleton ty; c = L.empty }, { s with ty_gen })
+  let ty = UnionFind.wrap ty in
+  (Ok { data = ty; ex = L.singleton ty; c = L.empty }, s)
 
 let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
@@ -169,16 +166,16 @@ let get_fun name _ s =
 
 let lit_has_ty lit ty =
   match lit with
-  | Ast.Int_lit _ -> constrain (Constraint.Nat ty)
+  | Ast.Int_lit _ -> constrain (Type.Nat ty)
   | Ast.Int32_lit _ ->
      let* int32 = create_ty (Type.Prim Type.Int32) in
-     constrain (Constraint.Eq(ty, int32))
+     constrain (Type.Eq(ty, int32))
   | Ast.Str_lit _ ->
      let* cstr = create_ty (Type.Prim Type.Cstr) in
-     constrain (Constraint.Eq(ty, cstr))
+     constrain (Type.Eq(ty, cstr))
   | Ast.Unit_lit ->
      let* unit = create_ty (Type.Prim Type.Unit) in
-     constrain (Constraint.Eq(ty, unit))
+     constrain (Type.Eq(ty, unit))
 
 exception String of string
 
@@ -245,10 +242,10 @@ let rec expr_has_ty expr ty =
      let* var = find var in
      begin match var with
      | Global name ->
-        let+ () = constrain (Constraint.Inst(name, ty)) in
+        let+ () = constrain (Type.Inst(name, ty)) in
         Typed.Global_expr name
      | Local var ->
-        let+ () = constrain (Constraint.Eq(Var.ty var, ty)) in
+        let+ () = constrain (Type.Eq(Var.ty var, ty)) in
         Typed.Var_expr var
      end
   | Ast.Lit_expr lit ->
@@ -271,7 +268,7 @@ let clause_has_ty clause ty =
   let* codom = fresh_tvar in
   let* rhs = in_scope map (expr_has_ty clause.clause_rhs.annot_item codom) in
   let* arrow = create_ty (Type.Fun({ dom; codom })) in
-  let+ () = constrain (Constraint.Eq(ty, arrow)) in
+  let+ () = constrain (Type.Eq(ty, arrow)) in
   Typed.{ clause_lhs = lhs; clause_vars = map; clause_rhs = rhs }
 
 let fun_has_ty func ty =
@@ -280,7 +277,7 @@ let fun_has_ty func ty =
   in
   Typed.{
       fun_name = func.Ast.fun_name;
-      fun_ty = Constraint.Forall(ex, cs, ty);
+      fun_ty = Type.Forall(ex, cs, ty);
       fun_clauses = clauses;
   }
 
