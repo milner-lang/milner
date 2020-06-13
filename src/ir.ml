@@ -11,6 +11,7 @@ type aexp =
   | Int32 of int
   | String of string
   | Var of ns Var.t
+  | Reg of int
   | Unit
 
 type cont = Block of int
@@ -18,9 +19,12 @@ type cont = Block of int
 type expr =
   | Switch of aexp * cont IntMap.t * cont
   | Continue of cont
+  | If of aexp * cont * cont
   | Let_aexp of ns Var.t * aexp * expr
   | Let_app of ns Var.t * aexp * aexp list * expr
-  | Let_strcmp of ns Var.t * aexp * aexp * expr
+  | Let_eqint32 of int * aexp * aexp * expr
+  | Let_gtint32 of int * aexp * aexp * expr
+  | Let_strcmp of int * aexp * aexp * expr
   | Let_cont of int * expr * expr
   | Return of aexp
 
@@ -41,6 +45,7 @@ type program = {
 
 type state = {
     var_gen : ns Var.gen;
+    reg_gen : int;
     block_gen : int;
     var_map : (Typed.ns Var.t, ns Var.t) Hashtbl.t;
   }
@@ -49,6 +54,7 @@ type 'a t = state -> ('a * ns Var.t L.t, string) result * state
 
 let init_state () = {
     var_gen = Var.init_gen;
+    reg_gen = 0;
     block_gen = 0;
     var_map = Hashtbl.create 100;
   }
@@ -100,6 +106,10 @@ let throw e s = (Error e, s)
 let fresh ty s =
   let v, var_gen = Var.fresh s.var_gen ty in
   (Ok (v, L.singleton v), { s with var_gen })
+
+let fresh_reg s =
+  let r = s.reg_gen in
+  Ok (r, L.empty), { s with reg_gen = r + 1 }
 
 let get_state s = (Ok (s, L.empty), s)
 
@@ -261,23 +271,28 @@ let rec compile_matrix occs mat =
           else
             let pivot = lo + (hi - lo) / 2 in
             let test_str, cont = array.(pivot) in
-            let+ test_result = fresh (UnionFind.wrap (Type.Prim Type.Int32))
+            let+ strtest_result = fresh_reg
+            and+ eq_result = fresh_reg
+            and+ gt_result = fresh_reg
             and+ left_id = fresh_block
             and+ right_id = fresh_block
+            and+ gt_id = fresh_block
             and+ left = make_binary_search occ default array lo pivot
             and+ right = make_binary_search occ default array (pivot + 1) hi in
-            let jumptable =
-              (* 0 = equals, 1 = greater *)
-              IntMap.singleton 0 cont |> IntMap.add 1 (Block right_id)
-            in
-            Let_strcmp(
-                test_result, occ, String test_str,
+            Let_cont(
+                left_id, left,
                 Let_cont(
-                    left_id, left,
+                    right_id, right,
                     Let_cont(
-                        right_id, right,
-                        (* default branch = less *)
-                        Switch(Var test_result, jumptable, Block left_id))))
+                        gt_id,
+                        Let_gtint32(
+                            gt_result, Reg strtest_result, Int32 0,
+                            If(Reg gt_result, Block right_id, Block left_id)),
+                        Let_strcmp(
+                            strtest_result, occ, String test_str,
+                            Let_eqint32(
+                                eq_result, Reg strtest_result, Int32 0,
+                                If(Reg eq_result, cont, Block gt_id))))))
         in
         let* occ, occs', map, otherwise = specialize_str idx occs mat in
         let* blocks, jumptable =

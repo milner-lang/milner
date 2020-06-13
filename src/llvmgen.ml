@@ -17,6 +17,7 @@ type t = {
     llvals : Llvm.llvalue Vartbl.t;
     llfun : Llvm.llvalue;
     bbs : (int, Llvm.llbasicblock) Hashtbl.t;
+    regs : (int, Llvm.llvalue) Hashtbl.t;
     real_params : Llvm.lltype option list;
     prelude : prelude;
   }
@@ -85,7 +86,19 @@ let emit_aexp t = function
   | Ir.Var v ->
      Option.map (fun llval -> Llvm.build_load llval "" t.llbuilder)
        (Vartbl.find_opt t.llvals v)
+  | Ir.Reg n -> Some (Hashtbl.find t.regs n)
   | Ir.Unit -> None
+
+let emit_cmp kind t dest lhs rhs =
+  match emit_aexp t lhs, emit_aexp t rhs with
+  | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
+  | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
+  | Some _, None -> failwith "Unreachable: rhs cannot be unit"
+  | Some lhs, Some rhs ->
+     let llval =
+       Llvm.build_icmp kind lhs rhs ("r" ^ Int.to_string dest) t.llbuilder
+     in
+     Hashtbl.add t.regs dest llval
 
 let rec emit_expr t = function
   | Ir.Switch(scrut, cases, Block default) ->
@@ -105,6 +118,14 @@ let rec emit_expr t = function
   | Ir.Continue (Block bb) ->
      let bb = Hashtbl.find t.bbs bb in
      ignore (Llvm.build_br bb t.llbuilder)
+  | Ir.If(test, Block then_, Block else_) ->
+     begin match emit_aexp t test with
+     | None -> failwith "Unreachable: Test is erased"
+     | Some test ->
+        let then_ = Hashtbl.find t.bbs then_ in
+        let else_ = Hashtbl.find t.bbs else_ in
+        ignore (Llvm.build_cond_br test then_ else_ t.llbuilder)
+     end
   | Ir.Let_aexp(dest, aexp, next) ->
      begin match emit_aexp t aexp with
      | None -> ()
@@ -129,6 +150,12 @@ let rec emit_expr t = function
         end;
         emit_expr t next
      end
+  | Ir.Let_eqint32(dest, lhs, rhs, next) ->
+     emit_cmp Llvm.Icmp.Eq t dest lhs rhs;
+     emit_expr t next
+  | Ir.Let_gtint32(dest, lhs, rhs, next) ->
+     emit_cmp Llvm.Icmp.Sgt t dest lhs rhs;
+     emit_expr t next
   | Ir.Let_strcmp(dest, lhs, rhs, next) ->
      begin match emit_aexp t lhs, emit_aexp t rhs with
      | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
@@ -136,15 +163,17 @@ let rec emit_expr t = function
      | Some _, None -> failwith "Unreachable: rhs cannot be unit"
      | Some lhs, Some rhs ->
         let llval =
-          Llvm.build_call t.prelude.strcmp [|lhs; rhs|] "" t.llbuilder
+          Llvm.build_call t.prelude.strcmp [|lhs; rhs|]
+            ("tmp" ^ Int.to_string dest) t.llbuilder
         in
-        let loc = Vartbl.find t.llvals dest in
-        ignore (Llvm.build_store llval loc t.llbuilder);
+        Hashtbl.add t.regs dest llval;
         emit_expr t next
      end
   | Ir.Let_cont(bbname, cont, next) ->
      let bb = Llvm.append_block t.llctx (Int.to_string bbname) t.llfun in
      Hashtbl.add t.bbs bbname bb;
+     (* Important: Must visit [next] FIRST because it may define registers used
+        in the continuation *)
      emit_expr t next;
      let curr_bb = Llvm.insertion_block t.llbuilder in
      Llvm.position_at_end bb t.llbuilder;
@@ -170,6 +199,7 @@ let emit_fun prelude llmod fun_def =
       llfun;
       llvals = Vartbl.create (List.length fun_def.fun_vars);
       bbs = Hashtbl.create 10;
+      regs = Hashtbl.create 10;
       real_params;
       prelude;
     }
