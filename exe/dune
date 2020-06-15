@@ -1,3 +1,4 @@
 (executable
   (name main)
+  (public_name milner)
   (libraries cmdliner llvm.all_backends llvm.target milner))
