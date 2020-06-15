@@ -25,7 +25,7 @@
 
 %%
 
-let program := decls = list(decl); EOF; { { decls } }
+let program := decls = list(decl); EOF; { Ast.{ decls } }
 
 let decl :=
   | ~ = external_decl; {

@@ -1,5 +1,11 @@
 # Milner
 
+## Installing
+
+```
+opam install ./milner.opam
+```
+
 ## Compiling and running programs
 
 ```
