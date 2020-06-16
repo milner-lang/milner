@@ -33,15 +33,15 @@ fun main() =
     \pause
   \item Syntax
     $$
-    e ::= \lambda x.e \mid e \: e \mid x
+    e ::= \lambda x.e \mid e(e) \mid x, y, z...
     $$
     \pause
   \item Semantics
     $$
-    \frac{e_1 \longrightarrow e_1'}{e_1 e_2 \longrightarrow e_1' e_2}
+    \frac{e_1 \longrightarrow e_1'}{e_1(e_2) \longrightarrow e_1'(e_2)}
     $$
     $$
-    \frac{}{(\lambda x.e_1)e_2 \longrightarrow e_1[x/e_2]}
+    \frac{}{(\lambda x.e_1)(e_2) \longrightarrow e_1[x/e_2]}
     $$
   \end{itemize}
   \pause
@@ -87,7 +87,23 @@ fun main() =
 \end{frame}
 
 \begin{frame}
-  \frametitle{Compilers}
+  \begin{figure}
+    \includegraphics[scale=0.25]{ocaml-color-logo.png}
+  \end{figure}
+  \begin{itemize}
+    \pause
+  \item OCaml - Implementation language
+    \pause
+  \item Developed at Inria - Coq proof assistant as motivation
+    \pause
+  \item Descendant of Robin Milner's proof assistant meta language, ML
+    \pause
+  \item Excels at compiler development, symbolic manipulation
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Reading}
   Compilers aren't magical
   \begin{itemize}
     \pause
@@ -104,9 +120,18 @@ fun main() =
   \item $1 + 2 \times 3$
     \pause
   \item \Tree [.add num(1) [.mul num(2) num(3) ] ]
-    \pause
-  \item Sedlex lexer generator and Menhir parser generator
   \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \begin{figure}
+    \includegraphics[scale=0.5]{ast-annot.png}
+    \caption{Source location annotation}
+  \end{figure}
+  \begin{figure}
+    \includegraphics[scale=0.5]{ast-expr.png}
+    \caption{Expression tree definition}
+  \end{figure}
 \end{frame}
 
 \begin{frame}
@@ -132,7 +157,7 @@ fun main() =
       \pause
     \item
       $$
-      \frac{e_1 : A \to B \quad e_2 : A}{e_1 \: e_2 : B}
+      \frac{e_1 : A \to B \quad e_2 : A}{e_1 (e_2) : B}
       $$
     \end{itemize}
   \item Hindley-Milner type system
@@ -140,7 +165,7 @@ fun main() =
 \end{frame}
 
 \begin{frame}
-  \frametitle{LLVM}
+  \frametitle{Code Generation}
   \begin{itemize}
     \pause
   \item $M$ languages, $N$ target architectures
@@ -156,9 +181,28 @@ fun main() =
   \item $compiler : Source \to Target$
     \pause
   \item $compiler = backend \circ frontend$
-    \pause
-  \item LLVM = Low-Level Virtual Machine
   \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{LLVM}
+  \begin{figure}
+    \includegraphics[scale=0.5]{LLVM-Logo-Derivative-1.png}
+  \end{figure}
+  \begin{itemize}
+    \pause
+  \item LLVM - Low-Level Virtual Machine
+    \pause
+  \item SSA - Static Single Assignment
+    \pause
+  \item Official OCaml API - https://llvm.moe/
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[plain,c]
+  \begin{center}
+    \huge Questions?
+  \end{center}
 \end{frame}
 
 \end{document}
