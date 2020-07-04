@@ -1,15 +1,14 @@
 open Cmdliner
+open Llvm_target
 open Milner
 
-let ( let+ ) m f = Result.map f m
-let ( let* ) = Result.bind
-
 let emit_llvm =
-  Arg.(value @@ flag @@ info ["emit-llvm"])
+  let doc = "Emit LLVM IR." in
+  Arg.(value @@ flag @@ info ~doc ["emit-llvm"])
 
 let triple =
   let open Llvm_target in
-  let doc = "The target triple" in
+  let doc = "The target triple." in
   Arg.(value @@ opt string (Target.default_triple ())
        @@ info ~docv:"TARGET" ~doc ["target"])
 
@@ -18,33 +17,94 @@ let in_files =
   Arg.(non_empty @@ pos_all string [] @@ info ~docv:"FILE" ~doc [])
 
 let out_file =
-  Arg.(value @@ opt string "a.o" @@ info ["o"; "output"])
+  let doc = "Place the output into $(docv)." in
+  Arg.(value @@ opt (some string) None
+       @@ info ~docv:"output_file" ~doc ["o"; "output"])
 
-let compile triple emit_llvm out_file = function
+let codegen_filetype =
+  let flags =
+    [ ( CodeGenFileType.ObjectFile
+      , Arg.info ~doc:"Compile only; do not assemble or link." ["c"] )
+    ; ( CodeGenFileType.AssemblyFile
+      , Arg.info ~doc:"Compile and assemble, but do not link." ["S"] ) ]
+  in
+  Arg.(value @@ vflag CodeGenFileType.ObjectFile flags)
+
+type reloc =
+  | Static
+  | Pic
+  | Dynamic_no_pic
+
+let reloc_model =
+  let doc = "Choose relocation model" in
+  let converter =
+    Arg.conv
+      ((function
+        | "static" -> Ok Static
+        | "pic" -> Ok Pic
+        | "dynamic-no-pic" -> Ok Dynamic_no_pic
+        | s -> Error (`Msg s)),
+       fun fmt s -> 
+       match s with
+       | Static -> Format.pp_print_string fmt "static"
+       | Pic -> Format.pp_print_string fmt "pic"
+       | Dynamic_no_pic -> Format.pp_print_string fmt "dynamic-no-pic")
+  in
+  Arg.(value @@ opt converter Pic @@ info ~doc ["relocation-model"])
+
+let compile triple reloc_model emit_llvm codegen_filetype out_file = function
   | [] -> assert false
   | file :: _files ->
      match
-       let open Llvm_target in
+       let ( let+ ) m f = Result.map f m in
+       let ( let* ) = Result.bind in
+       let* out_file = match out_file with
+         | Some name -> Ok name
+         | None ->
+            match Filename.chop_suffix_opt ~suffix:".ml" file with
+            | None -> Error "Unknown file extension."
+            | Some base ->
+               let s = match emit_llvm, codegen_filetype with
+                 | false, CodeGenFileType.ObjectFile -> ".o"
+                 | false, CodeGenFileType.AssemblyFile -> ".s"
+                 | true, CodeGenFileType.ObjectFile -> ".bc"
+                 | true, CodeGenFileType.AssemblyFile -> ".ll"
+               in Ok (base ^ s)
+       in
        let* prog = Driver.read_file file in
        let+ llmod = Driver.compile prog in
-       if emit_llvm then (
-         Llvm.dump_module llmod;
-         ignore (Llvm_bitwriter.write_bitcode_file llmod out_file)
-       ) else (
+       if emit_llvm then
+         match codegen_filetype with
+         | CodeGenFileType.ObjectFile ->
+            ignore (Llvm_bitwriter.write_bitcode_file llmod out_file)
+         | CodeGenFileType.AssemblyFile ->
+            Llvm.print_module out_file llmod
+       else (
          Llvm_all_backends.initialize ();
          let target = Target.by_triple triple in
-         let mach =
-           TargetMachine.create ~triple ~reloc_mode:RelocMode.PIC target
+         let reloc_mode = match reloc_model with
+           | Static -> RelocMode.Static
+           | Pic -> RelocMode.PIC
+           | Dynamic_no_pic -> RelocMode.DynamicNoPIC
          in
-         TargetMachine.emit_to_file
-           llmod CodeGenFileType.ObjectFile out_file mach
+         let mach = TargetMachine.create ~triple ~reloc_mode target in
+         TargetMachine.emit_to_file llmod codegen_filetype out_file mach
        )
      with
      | Ok () -> ()
      | Error e -> output_string stderr (e ^ "\n")
 
 let cmd =
-  Term.(const compile $ triple $ emit_llvm $ out_file $ in_files, info "")
+  let ( let+ ) tm f = Term.(const f $ tm) in
+  let ( and+ ) a b = Term.(const (fun a b -> (a, b)) $ a $ b) in
+  ( (let+ triple = triple
+     and+ reloc_model = reloc_model
+     and+ emit_llvm = emit_llvm
+     and+ codegen_filetype = codegen_filetype
+     and+ out_file = out_file
+     and+ in_files = in_files in
+     compile triple reloc_model emit_llvm codegen_filetype out_file in_files)
+  , Term.info "milner" )
 
 let () =
   Term.exit @@ Term.eval cmd
