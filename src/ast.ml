@@ -6,7 +6,8 @@ type 'a annot = {
 
 type ty =
   | Arrow of ty annot list * ty annot
-  | TyCon of string
+  | Ty_con of string
+  | Ty_var of string
   | Unit
 
 type literal =
@@ -39,7 +40,7 @@ type fun_def = {
 
 type decl =
   | External of string * ty annot
-  | Forward_decl of string * ty annot
+  | Forward_decl of string * string list * ty annot
   | Fun of fun_def
 
 type program = {
