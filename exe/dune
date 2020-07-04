@@ -1,4 +1,4 @@
 (executable
   (name main)
   (public_name milner)
-  (libraries cmdliner llvm.all_backends llvm.target milner))
+  (libraries cmdliner llvm.all_backends llvm.bitwriter llvm.target milner))
