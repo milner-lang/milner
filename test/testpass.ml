@@ -22,4 +22,4 @@ let () =
                        Llvm_analysis.assert_valid_module llmod
                      ) ~finally:(fun () -> Llvm.dispose_module llmod)
         ) ~finally:(fun () -> close_in chan)
-    ) ["fun.ml"]
+    ) ["fun.ml"; "generic.ml"]

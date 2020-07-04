@@ -28,11 +28,14 @@ let compile triple emit_llvm out_file = function
        let* prog = Driver.read_file file in
        let+ llmod = Driver.compile prog in
        if emit_llvm then (
-         Llvm.dump_module llmod
+         Llvm.dump_module llmod;
+         ignore (Llvm_bitwriter.write_bitcode_file llmod out_file)
        ) else (
          Llvm_all_backends.initialize ();
          let target = Target.by_triple triple in
-         let mach = TargetMachine.create ~triple target in
+         let mach =
+           TargetMachine.create ~triple ~reloc_mode:RelocMode.PIC target
+         in
          TargetMachine.emit_to_file
            llmod CodeGenFileType.ObjectFile out_file mach
        )
