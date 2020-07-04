@@ -16,6 +16,7 @@ let keywords = Hashtbl.create 23
 let () =
   Hashtbl.add keywords "as" AS;
   Hashtbl.add keywords "external" EXTERNAL;
+  Hashtbl.add keywords "forall" FORALL;
   Hashtbl.add keywords "fun" FUN;
   Hashtbl.add keywords "val" VAL
 
@@ -29,6 +30,7 @@ let rec tokenize lexbuf = match%sedlex lexbuf with
   | ';' -> SEMICOLON
   | '_' -> UNDERSCORE
   | '"' -> string (Buffer.create 17) lexbuf
+  | 0x2200 (* ∀ *) -> FORALL
   | "->" -> ARROW
   | base10_int, "i32" ->
      let str = Sedlexing.Utf8.lexeme lexbuf in

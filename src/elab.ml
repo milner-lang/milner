@@ -5,12 +5,14 @@ module Symtable = ScopedMap.Make(String)
 type error =
   | Redefined of string
   | Undefined of string
+  | Undefined_tvar of string
   | Unification
   | Unimplemented of string
 
 let string_of_error = function
   | Redefined s -> "Redefined " ^ s
   | Undefined s -> "Undefined " ^ s
+  | Undefined_tvar s -> "Undefined type variable " ^ s
   | Unification -> "Unification"
   | Unimplemented s -> "Unimplemented " ^ s
 
@@ -147,13 +149,26 @@ let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
   (Ok { data = var; ex = L.empty; c = L.empty }, { s with var_gen })
 
-let rec read_ty = function
+let rec read_ty tvars = function
   | Ast.Unit -> create_ty (Type.Prim Type.Unit)
-  | Ast.TyCon tycon -> find_tcon tycon
+  | Ast.Ty_con tycon -> find_tcon tycon
   | Ast.Arrow(dom, codom) ->
-     let* dom = mapM (fun x -> read_ty x.Ast.annot_item) dom in
-     let* codom = read_ty codom.Ast.annot_item in
+     let* dom = mapM (fun x -> read_ty tvars x.Ast.annot_item) dom in
+     let* codom = read_ty tvars codom.Ast.annot_item in
      create_ty (Type.Fun { dom; codom })
+  | Ast.Ty_var name ->
+     match StringMap.find_opt name tvars with
+     | Some v -> create_ty (Type.Rigid v)
+     | None -> throw (Undefined_tvar name)
+
+let read_ty_scheme tvars ty =
+  let len, tvar_map =
+    List.fold_left
+      (fun (i, tvars) next -> i + 1, StringMap.add next i tvars)
+      (0, StringMap.empty) tvars
+  in
+  let+ ty = read_ty tvar_map ty in
+  len, ty
 
 let inst n ty _ s =
   let ty_args, ty, ty_gen = Type.inst s.ty_gen n ty in
@@ -285,25 +300,29 @@ let fun_has_ty func ty =
   match Solve.solve_many cs with
     | Error _ -> throw Unification
     | Ok () ->
-       let ty_scheme = Type.gen ex ty in
-       return
-         (Typed.{
-            fun_name = func.Ast.fun_name;
-            fun_ty = ty_scheme;
-            fun_clauses = clauses;
-         })
+       let+ ty_scheme =
+         let+ opt = get_fun func.Ast.fun_name in
+         match opt with
+         | Some ty_scheme -> ty_scheme
+         | None -> Type.gen ex ty
+       in
+       Typed.{
+           fun_name = func.Ast.fun_name;
+           fun_ty = ty_scheme;
+           fun_clauses = clauses;
+       }
 
 let elab_program prog =
   let+ decls =
     fold_leftM (fun decls next ->
         match next.Ast.annot_item with
         | Ast.External(name, ty) ->
-           let* ty = read_ty ty.Ast.annot_item in
+           let* ty = read_ty StringMap.empty ty.Ast.annot_item in
            let+ () = decl_fun name (Type.Forall(0, ty)) in
            Typed.External(name, ty) :: decls
-        | Ast.Forward_decl(name, ty) ->
-           let* ty = read_ty ty.Ast.annot_item in
-           let+ () = decl_fun name (Type.Forall(0, ty)) in
+        | Ast.Forward_decl(name, tvars, ty) ->
+           let* n, ty = read_ty_scheme tvars ty.Ast.annot_item in
+           let+ () = decl_fun name (Type.Forall(n, ty)) in
            decls
         | Ast.Fun fun_def ->
            let* ty, declared =
