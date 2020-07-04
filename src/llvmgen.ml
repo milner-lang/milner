@@ -10,6 +10,10 @@ type prelude = {
     strcmp : Llvm.llvalue;
   }
 
+type status =
+  | External of Type.t
+  | Internal of Ir.fun_def
+
 type t = {
     llctx : Llvm.llcontext;
     llmod : Llvm.llmodule;
@@ -20,6 +24,8 @@ type t = {
     regs : (int, Llvm.llvalue) Hashtbl.t;
     real_params : Llvm.lltype option list;
     prelude : prelude;
+    poly_funs : (string, status) Hashtbl.t;
+    ty_args : Type.t array;
   }
 
 let with_module llctx name f =
@@ -28,8 +34,38 @@ let with_module llctx name f =
 
 let remove_nones list = List.filter_map Fun.id list
 
+let rec mangle_ty type_args ty =
+  match UnionFind.find ty with
+  | UnionFind.Value (Type.Prim prim) ->
+     begin match prim with
+     | Type.Cstr -> "cstr"
+     | Type.Nat8 -> "nat8"
+     | Type.Int8 -> "int8"
+     | Type.Nat16 -> "nat16"
+     | Type.Int16 -> "int16"
+     | Type.Nat32 -> "nat32"
+     | Type.Int32 -> "int32"
+     | Type.Nat64 -> "nat64"
+     | Type.Int64 -> "int64"
+     | Type.Unit -> "unit"
+     end
+  | UnionFind.Value (Type.Fun _fun_ty) -> ""
+  | UnionFind.Value (Type.Pointer _) -> "pointer"
+  | UnionFind.Value (Type.Rigid v) -> mangle_ty type_args type_args.(v)
+  | UnionFind.Root _ -> failwith "Unsolved type"
+
+let mangle_fun type_args name fun_ty =
+  let buf = Buffer.create 32 in
+  Buffer.add_string buf name;
+  List.iter (fun ty ->
+      let s = mangle_ty type_args ty in
+      Buffer.add_string buf (Int.to_string (String.length s));
+      Buffer.add_string buf s
+    ) fun_ty.Type.dom;
+  Buffer.contents buf
+
 (** The unit type does not translate into a machine type. *)
-let rec transl_ty llctx ty =
+let rec transl_ty llctx ty_args ty =
   match UnionFind.find ty with
   | UnionFind.Value (Type.Prim prim) ->
      begin match prim with
@@ -41,20 +77,20 @@ let rec transl_ty llctx ty =
      | Type.Unit -> None
      end
   | UnionFind.Value (Type.Fun fun_ty) ->
-     let params, ret = transl_fun_ty llctx fun_ty in
+     let params, ret = transl_fun_ty llctx ty_args fun_ty in
      let params = params |> remove_nones |> Array.of_list in
      Some (Llvm.function_type ret params)
   | UnionFind.Value (Type.Pointer _) ->
      Some (Llvm.pointer_type (Llvm.i8_type llctx))
-  | UnionFind.Value (Type.Rigid _) -> assert false
+  | UnionFind.Value (Type.Rigid v) -> transl_ty llctx ty_args ty_args.(v)
   | UnionFind.Root _ -> failwith "Unsolved type"
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
-and transl_fun_ty llctx fun_ty =
-  let params = List.map (transl_ty llctx) fun_ty.Type.dom in
+and transl_fun_ty llctx ty_args fun_ty =
+  let params = List.map (transl_ty llctx ty_args) fun_ty.Type.dom in
   let ret =
-    match transl_ty llctx fun_ty.Type.codom with
+    match transl_ty llctx ty_args fun_ty.Type.codom with
     | None -> Llvm.void_type llctx
     | Some ty -> ty
   in
@@ -71,14 +107,23 @@ let real_param_idx idx list =
   in loop 0 0 list
 
 (** The unit type is erased. *)
-let emit_aexp t = function
+let rec emit_aexp t = function
   | Ir.Param idx ->
-     (* If the variable does not map to anything, it must have an erased type *)
+     (* If the variable doesn't map to anything, it must have an erased type *)
      Option.map (Llvm.param t.llfun) (real_param_idx idx t.real_params)
-  | Ir.Global name ->
-     begin match Llvm.lookup_function name t.llmod with
-     | None -> assert false
-     | Some func -> Some func
+  | Ir.Global(name, targs) ->
+     begin match Hashtbl.find t.poly_funs name with
+     | External _ ->
+        begin match Llvm.lookup_function name t.llmod with
+        | None -> assert false
+        | Some func -> Some func
+        end
+     | Internal fun_def ->
+        let mangled_name = mangle_fun targs name fun_def.Ir.fun_ty in
+        begin match Llvm.lookup_function mangled_name t.llmod with
+        | None -> Some (emit_fun t.prelude t.poly_funs t.llmod targs fun_def)
+        | Some func -> Some func
+        end
      end
   | Ir.Int32 n -> Some (Llvm.const_int (Llvm.i32_type t.llctx) n)
   | Ir.String s ->
@@ -89,7 +134,7 @@ let emit_aexp t = function
   | Ir.Reg n -> Some (Hashtbl.find t.regs n)
   | Ir.Unit -> None
 
-let emit_cmp kind t dest lhs rhs =
+and emit_cmp kind t dest lhs rhs =
   match emit_aexp t lhs, emit_aexp t rhs with
   | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
   | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
@@ -100,7 +145,7 @@ let emit_cmp kind t dest lhs rhs =
      in
      Hashtbl.add t.regs dest llval
 
-let rec emit_expr t = function
+and emit_expr t = function
   | Ir.Switch(scrut, cases, Block default) ->
      let default = Hashtbl.find t.bbs default in
      begin match emit_aexp t scrut with
@@ -142,7 +187,7 @@ let rec emit_expr t = function
           List.map (emit_aexp t) args |> remove_nones |> Array.of_list
         in
         let llval = Llvm.build_call f args "" t.llbuilder in
-        begin match transl_ty t.llctx (Var.ty dest) with
+        begin match transl_ty t.llctx t.ty_args (Var.ty dest) with
         | None -> ()
         | Some _ ->
            let loc = Vartbl.find t.llvals dest in
@@ -184,39 +229,47 @@ let rec emit_expr t = function
      | None -> ignore (Llvm.build_ret_void t.llbuilder)
      | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
 
-let emit_fun prelude llmod fun_def =
-  let llctx = Llvm.module_context llmod in
-  let real_params, ret_ty = transl_fun_ty llctx fun_def.Ir.fun_ty in
-  let param_tys = real_params |> remove_nones |> Array.of_list in
-  let lltype = Llvm.function_type ret_ty param_tys in
-  let llfun = Llvm.define_function fun_def.fun_name lltype llmod in
-  let entry = Llvm.entry_block llfun in
-  let llbuilder = Llvm.builder_at_end llctx entry in
-  let t = {
-      llctx;
-      llmod;
-      llbuilder;
-      llfun;
-      llvals = Vartbl.create (List.length fun_def.fun_vars);
-      bbs = Hashtbl.create 10;
-      regs = Hashtbl.create 10;
-      real_params;
-      prelude;
-    }
-  in
-  (* Allocate stack space for all local variables *)
-  List.iter (fun var ->
-      match transl_ty t.llctx (Var.ty var) with
-      | None -> ()
-      | Some mach_ty ->
-         let llval = Llvm.build_alloca mach_ty "" llbuilder in
-         Vartbl.add t.llvals var llval
-    ) fun_def.Ir.fun_vars;
-  emit_expr t fun_def.Ir.fun_body
+and emit_fun prelude poly_funs llmod ty_args fun_def =
+  let mangled = mangle_fun ty_args fun_def.Ir.fun_name fun_def.Ir.fun_ty in
+  match Llvm.lookup_function mangled llmod with
+  | Some func -> func
+  | None ->
+     let llctx = Llvm.module_context llmod in
+     let real_params, ret_ty = transl_fun_ty llctx ty_args fun_def.Ir.fun_ty in
+     let param_tys = real_params |> remove_nones |> Array.of_list in
+     let lltype = Llvm.function_type ret_ty param_tys in
+     let llfun = Llvm.define_function mangled lltype llmod in
+     let entry = Llvm.entry_block llfun in
+     let llbuilder = Llvm.builder_at_end llctx entry in
+     let t = {
+         llctx;
+         llmod;
+         llbuilder;
+         llfun;
+         llvals = Vartbl.create (List.length fun_def.fun_vars);
+         bbs = Hashtbl.create 10;
+         regs = Hashtbl.create 10;
+         real_params;
+         prelude;
+         poly_funs;
+         ty_args;
+       }
+     in
+     (* Allocate stack space for all local variables *)
+     List.iter (fun var ->
+         match transl_ty t.llctx ty_args (Var.ty var) with
+         | None -> ()
+         | Some mach_ty ->
+            let llval = Llvm.build_alloca mach_ty "" llbuilder in
+            Vartbl.add t.llvals var llval
+       ) fun_def.fun_vars;
+     emit_expr t fun_def.fun_body;
+     llfun
 
 let emit_module llctx name prog =
   let llmod = Llvm.create_module llctx name in
   try
+    let poly_funs = Hashtbl.create 33 in
     let cstr_ty = Llvm.pointer_type (Llvm.i8_type llctx) in
     let strcmp =
       let ty = Llvm.function_type (Llvm.i32_type llctx) [| cstr_ty; cstr_ty |]
@@ -228,13 +281,20 @@ let emit_module llctx name prog =
     in
     List.iter (function
         | Ir.External(name, ty) ->
-           begin match transl_ty llctx ty with
+           Hashtbl.add poly_funs name (External ty)
+        | Ir.Fun fun_def ->
+           Hashtbl.add poly_funs fun_def.Ir.fun_name (Internal fun_def)
+      ) prog.Ir.decls;
+    List.iter (function
+        | Ir.External(name, ty) ->
+           begin match transl_ty llctx [||] ty with
            | Some ty ->
               ignore (Llvm.declare_function name ty llmod)
            | None -> failwith "External symbol not a function!"
            end
         | Ir.Fun fun_def ->
-           emit_fun prelude llmod fun_def
+           if fun_def.Ir.fun_poly = 0 then
+             ignore (emit_fun prelude poly_funs llmod [||] fun_def)
       ) prog.Ir.decls;
     llmod
   with
