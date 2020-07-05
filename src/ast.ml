@@ -10,6 +10,12 @@ type ty =
   | Ty_var of string
   | Unit
 
+type adt = {
+    adt_name : string;
+    adt_params : string list;
+    adt_constrs : (string * ty annot list) list;
+  }
+
 type literal =
   | Int_lit of int
   | Int32_lit of int
@@ -18,6 +24,7 @@ type literal =
 
 type pat =
   | As_pat of pat annot * string
+  | Constr_pat of string * pat annot list
   | Lit_pat of literal
   | Var_pat of string
   | Wild_pat
@@ -42,6 +49,7 @@ type decl =
   | External of string * ty annot
   | Forward_decl of string * string list * ty annot
   | Fun of fun_def
+  | Adt of adt
 
 type program = {
     decls : decl annot list;

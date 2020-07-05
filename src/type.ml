@@ -11,6 +11,7 @@ type prim =
   | Unit
 
 type ty =
+  | Constr of adt
   | Fun of fun_ty
   | Pointer of t
   | Prim of prim
@@ -21,6 +22,11 @@ and t = ty UnionFind.t
 and fun_ty = {
     dom : t list;
     codom : t;
+  }
+
+and adt = {
+    adt_name : string;
+    adt_constrs : (string * t list) array;
   }
 
 type constraints =
@@ -43,6 +49,11 @@ let prim_eq lhs rhs = match lhs, rhs with
   | _, _ -> false
 
 let rec unify lhs rhs = match lhs, rhs with
+  | Constr adt, Constr adt' ->
+     if adt.adt_name = adt'.adt_name then
+       Ok ()
+     else
+       Error "Unification fail"
   | Fun lhs, Fun rhs -> unify_fun lhs rhs
   | Pointer lhs, Pointer rhs -> UnionFind.union unify (Ok ()) lhs rhs
   | Prim lhs, Prim rhs ->
@@ -73,6 +84,7 @@ and unify_fun lhs rhs =
 
 let rec rename namegen ty =
   match UnionFind.find ty with
+  | Value (Constr _) -> namegen
   | Value (Fun fun_ty) ->
      let namegen = List.fold_right (Fun.flip rename) fun_ty.dom namegen in
      rename namegen fun_ty.codom
@@ -108,9 +120,10 @@ let inst gen n ty =
         ty)
   in
   let rec loop ty = match UnionFind.find ty with
+    | Value (Constr name) -> UnionFind.wrap (Constr name)
     | Value (Fun fun_ty) ->
        UnionFind.wrap
-         (Fun { dom = List.map loop fun_ty.dom; codom = loop fun_ty.codom})
+         (Fun { dom = List.map loop fun_ty.dom; codom = loop fun_ty.codom })
     | Value (Prim p) -> UnionFind.wrap (Prim p)
     | Value (Pointer ty) -> UnionFind.wrap (Pointer (loop ty))
     | Value (Rigid r) -> arr.(r)

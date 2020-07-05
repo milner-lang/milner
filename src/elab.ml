@@ -18,6 +18,7 @@ let string_of_error = function
 
 type state = {
     tycons : (string, Type.t) Hashtbl.t;
+    datacons : (string, Type.adt * int) Hashtbl.t;
     funcs : (string, Type.forall) Hashtbl.t;
     ty_gen : UnionFind.gen;
     var_gen : Typed.ns Var.gen;
@@ -32,8 +33,8 @@ type 'a payload = {
 (* In the paper "Hindley-Milner Elaboration in Applicative Style," the wrapped
    data 'a is embedded inside a continuation of type env -> 'a. The paper notes
    that the presence of the continuation prevents the type from having a monad
-   instance; it only has an applicative instance. Because I do not wrap the data
-   in a continuation, I can have a monad. *)
+   instance; it only has an applicative instance. Because I do not wrap the
+   data in a continuation, I can have a monad. *)
 type 'a t =
   Typed.ns Var.t Symtable.t -> state -> ('a payload, error) result * state
 
@@ -45,6 +46,7 @@ let init_state () =
   Hashtbl.add tycons "Int32" (UnionFind.wrap (Type.Prim Type.Int32));
   { ty_gen = UnionFind.init_gen;
     var_gen = Var.init_gen;
+    datacons = Hashtbl.create 20;
     funcs = Hashtbl.create 20;
     tycons }
 
@@ -149,6 +151,15 @@ let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
   (Ok { data = var; ex = L.empty; c = L.empty }, { s with var_gen })
 
+let declare_datacon name idx adt _ s =
+  Hashtbl.add s.datacons name (idx, adt);
+  (Ok { data = (); ex = L.empty; c = L.empty }, s)
+
+let find_datacon name _ s =
+  match Hashtbl.find_opt s.datacons name with
+  | Some data -> (Ok { data; ex = L.empty; c = L.empty }, s)
+  | None -> Error (Undefined name), s
+
 let rec read_ty tvars = function
   | Ast.Unit -> create_ty (Type.Prim Type.Unit)
   | Ast.Ty_con tycon -> find_tcon tycon
@@ -169,6 +180,25 @@ let read_ty_scheme tvars ty =
   in
   let+ ty = read_ty tvar_map ty in
   len, ty
+
+let read_adt adt =
+  let constrs = Array.make (List.length adt.Ast.adt_constrs) ("", []) in
+  let+ _ =
+    fold_rightM (fun i (name, tys) ->
+        let+ tys =
+          mapM (fun ann -> read_ty StringMap.empty ann.Ast.annot_item) tys
+        in
+        constrs.(i) <- (name, tys);
+        i + 1)
+      0 adt.Ast.adt_constrs
+  in
+  let adt' = Type.{ adt_name = adt.Ast.adt_name; adt_constrs = constrs } in
+  let+ _ =
+    fold_rightM (fun i (name, _) ->
+        let+ () = declare_datacon name adt' i in
+        i + 1
+      ) 0 adt.Ast.adt_constrs in
+  adt'
 
 let inst n ty _ s =
   let ty_args, ty, ty_gen = Type.inst s.ty_gen n ty in
@@ -210,6 +240,20 @@ let rec pat_has_ty vars pat ty =
        throw (Redefined name)
      else
        return (pat, StringMap.add name var map)
+  | Ast.Constr_pat(name, pats) ->
+     let* adt, idx = find_datacon name in
+     let* pats_tys =
+       mapM (fun pat ->
+           let+ ty = fresh_tvar in
+           pat, ty
+         ) pats
+     in
+     let+ pats, varmap = pats_have_tys pats_tys in
+     ( Typed.{
+         pat_node = Constr_pat(ty, adt, idx, pats);
+         pat_vars = vars
+       }
+     , varmap )
   | Ast.Var_pat name ->
      let+ var = fresh_var ty in
      Var.add_name var name;
@@ -232,7 +276,7 @@ let rec pat_has_ty vars pat ty =
        }
      , StringMap.empty )
 
-let pats_have_tys pats =
+and pats_have_tys pats =
   fold_rightM (fun (pats, map) (pat, ty) ->
       (* Raise exception to break out *)
       let f k _ _ = raise (String k) in
@@ -339,6 +383,9 @@ let elab_program prog =
                decl_fun fun_def.Typed.fun_name fun_def.Typed.fun_ty
            in
            Typed.Fun fun_def :: decls
+        | Ast.Adt adt ->
+           let+ _adt = read_adt adt in
+           decls
       ) [] prog.Ast.decls
   in
   Typed.{ decls = List.rev decls }

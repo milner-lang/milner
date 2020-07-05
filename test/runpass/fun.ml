@@ -16,7 +16,7 @@ fun str_fun(0i32) = "foofoo"
   | (1i32) = "barbar"
   | (2i32) = "bazbaz"
   | (3i32) = "empty"
-  | (s) = ""
+  | (n) = ""
 
 val main : fun() -> Int32
 fun main() = 0i32

@@ -22,6 +22,9 @@ type expr =
   | If of aexp * cont * cont
   | Let_aexp of ns Var.t * aexp * expr
   | Let_app of ns Var.t * aexp * aexp list * expr
+  | Let_get_member of ns Var.t * ns Var.t * int * expr
+  | Let_get_tag of int * ns Var.t * expr
+  | Let_select_tag of int * ns Var.t * int * expr
   | Let_eqint32 of int * aexp * aexp * expr
   | Let_gtint32 of int * aexp * aexp * expr
   | Let_strcmp of int * aexp * aexp * expr
@@ -119,16 +122,12 @@ let get_vars m s =
   | Error e, s -> Error e, s
   | Ok (a, l), s -> Ok ((a, l), l), s
 
-let add_var v s =
-  Ok ((), L.singleton v), s
-
 let refresh = function
   | [] -> return None
   | (var :: _) as vars ->
      let* var' = fresh (Var.ty var)
      and* s = get_state in
-     let+ () = add_var var'
-     and+ () =
+     let+ () =
        iterM (fun var -> return (Hashtbl.add s.var_map var var')) vars
      in
      Some var'
@@ -156,12 +155,15 @@ type matrix = row list
 
 type refutability =
   | Irrefutable of ns Var.t option list
+  | Constr_pat of ns Var.t option * int * Type.t * Type.adt
   | Int_pat of ns Var.t option * int
   | Str_pat of ns Var.t option * int
 
 let find_refutable_pat =
   let rec loop idx wilds = function
-    | [] -> Irrefutable(List.rev wilds)
+    | [] -> Irrefutable (List.rev wilds)
+    | (Typed.{ pat_node = Constr_pat(ty, adt, _, _); _ }, var) :: _ ->
+       Constr_pat(var, idx, ty, adt)
     | (Typed.{ pat_node = Int_pat _; _ }, var) :: _ ->
        Int_pat(var, idx)
     | (Typed.{ pat_node = Str_pat _; _ }, var) :: _ ->
@@ -181,6 +183,29 @@ let split idx =
        else
          loop (x :: acc) (i + 1) xs
   in loop [] 0
+
+let specialize array idx occs mat =
+  let loccs, occ, roccs = split idx occs in
+  let occs = List.rev_append loccs roccs in
+  let+ otherwise =
+    fold_leftM (fun otherwise row ->
+        let lpats, (pat, _), rpats = split idx row.pats in
+        match pat.Typed.pat_node with
+        | Typed.Constr_pat(_, _, n, _pats) ->
+           (* TODO *)
+           let row =
+             { row with pats = (List.rev_append lpats rpats) }
+           in
+           array.(n) <- row :: array.(n);
+           return otherwise
+        | Typed.Wild_pat -> return (row :: otherwise)
+        | _ -> assert false
+      ) [] mat
+  in
+  for i = 0 to Array.length array - 1 do
+    array.(i) <- List.rev array.(i)
+  done;
+  (occ, occs, List.rev otherwise)
 
 let specialize_int idx occs mat =
   let loccs, occ, roccs = split idx occs in
@@ -224,14 +249,14 @@ let compile_irrefutable expr occs wilds =
   let rec loop expr = function
     | [], [] -> expr
     | occ :: occs, Some var :: wilds ->
-       loop (Let_aexp(var, occ, expr)) (occs, wilds)
+       loop (Let_aexp(var, Var occ, expr)) (occs, wilds)
     | _ :: occs, None :: wilds -> loop expr (occs, wilds)
     | _ :: _, [] -> assert false
     | [], _ :: _ -> assert false
   in
   loop expr (occs, wilds)
 
-let rec compile_matrix occs mat =
+let rec compile_matrix (occs : ns Var.t list) mat =
   match mat with
   | [] -> throw "Incomplete pattern match"
   | row :: mat' ->
@@ -241,6 +266,51 @@ let rec compile_matrix occs mat =
         | [] -> return (compile_irrefutable (Continue row.action) occs wilds)
         | _ :: _ -> throw "Unreachable code"
         end
+
+     | Constr_pat(pat_var, idx, _ty, adt) ->
+        let array = Array.make (Array.length adt.Type.adt_constrs) [] in
+        let* occ, occs', otherwise = specialize array idx occs mat in
+        let+ tag_reg = fresh_reg (* Register to store the tag *)
+        and+ _, blocks, jumptable =
+          Array.fold_left (fun acc mat ->
+              let* i, blocks, map = acc in
+              let _, tys = adt.Type.adt_constrs.(i) in
+              let* casted_reg = fresh_reg in
+              let* vars = mapM fresh tys in
+              (* Push inner terms of data constructor onto [occ'] *)
+              let occs' = List.append vars occs' in
+              let+ branch = compile_matrix occs' mat
+              and+ block_id = fresh_block in
+              let rec get_members j = function
+                | [] -> branch
+                | var :: vars ->
+                   Let_get_member(var, occ, j, get_members (j + 1) vars)
+              in
+              ( i + 1
+              , ( block_id
+                , Let_select_tag(casted_reg, occ, i, get_members 0 vars)
+                ) :: blocks
+              , IntMap.add i (Block block_id) map )
+            ) (return (0, [], IntMap.empty)) array
+        and+ default_id = fresh_block
+        and+ default = compile_matrix occs otherwise in
+        let expr =
+          Let_cont(
+              default_id, default,
+              Let_get_tag(
+                  tag_reg, occ,
+                  Switch(Reg tag_reg, jumptable, Block default_id)))
+        in
+        let expr =
+          List.fold_right (fun (block_id, branch) expr ->
+              Let_cont(block_id, branch, expr)
+            ) blocks expr
+        in
+        begin match pat_var with
+        | None -> expr
+        | Some var -> Let_aexp(var, Var occ, expr)
+        end
+
      | Int_pat(pat_var, idx) ->
         let* occ, occs', map, otherwise = specialize_int idx occs mat in
         let+ blocks, jumptable =
@@ -257,11 +327,11 @@ let rec compile_matrix occs mat =
               Let_cont(block_id, branch, expr)
             ) blocks
             (Let_cont(default_id, default,
-                      Switch(occ, jumptable, Block default_id)))
+                      Switch(Var occ, jumptable, Block default_id)))
         in
         begin match pat_var with
         | None -> expr
-        | Some var -> Let_aexp(var, occ, expr)
+        | Some var -> Let_aexp(var, Var occ, expr)
         end
 
      | Str_pat(pat_var, idx) ->
@@ -290,7 +360,7 @@ let rec compile_matrix occs mat =
                             gt_result, Reg strtest_result, Int32 0,
                             If(Reg gt_result, Block right_id, Block left_id)),
                         Let_strcmp(
-                            strtest_result, occ, String test_str,
+                            strtest_result, Var occ, String test_str,
                             Let_eqint32(
                                 eq_result, Reg strtest_result, Int32 0,
                                 If(Reg eq_result, cont, Block gt_id))))))
@@ -315,10 +385,9 @@ let rec compile_matrix occs mat =
               Let_cont(block_id, branch, expr)
             ) blocks (Let_cont(default_id, default, search))
         in
-        begin match pat_var with
+        match pat_var with
         | None -> expr
-        | Some var -> Let_aexp(var, occ, expr)
-        end
+        | Some var -> Let_aexp(var, Var occ, expr)
 
 let rec compile_expr exp k =
   match exp with
@@ -348,23 +417,26 @@ let compile_fun fun_def =
     | UnionFind.Value (Type.Fun fun_ty) -> fun_ty
     | _ -> assert false
   in
-  let params = List.mapi (fun i _ -> Param i) arity.Type.dom in
-  let rec create_matrix mat exprs = function
-    | [] -> return (List.rev mat, List.rev exprs)
-    | clause :: clauses ->
-       let* cont_id = fresh_block in
-       let* pats =
-         mapM (fun pat ->
-             let+ var = refresh pat.Typed.pat_vars in
-             (pat, var)
-           ) clause.Typed.clause_lhs
-       in
-       create_matrix
-         ({ pats; action = Block cont_id } :: mat)
-         ((cont_id, clause.Typed.clause_rhs) :: exprs)
-         clauses
-  in
+  let n = List.length arity.Type.dom in
   let compile_body =
+    (* Everything needs to be inside the action [compile_body] so that
+       all generated variables can be collected by [get_vars] *)
+    let* params = mapM fresh arity.Type.dom in
+    let rec create_matrix mat exprs = function
+      | [] -> return (List.rev mat, List.rev exprs)
+      | clause :: clauses ->
+         let* cont_id = fresh_block in
+         let* pats =
+           mapM (fun pat ->
+               let+ var = refresh pat.Typed.pat_vars in
+               (pat, var)
+             ) clause.Typed.clause_lhs
+         in
+         create_matrix
+           ({ pats; action = Block cont_id } :: mat)
+           ((cont_id, clause.Typed.clause_rhs) :: exprs)
+           clauses
+    in
     let* mat, exprs = create_matrix [] [] fun_def.Typed.fun_clauses in
     let* entry = compile_matrix params mat in
     let+ exprs =
@@ -372,9 +444,16 @@ let compile_fun fun_def =
           let+ expr = compile_expr expr (fun x -> return (Return x))
           in cont_id, expr) exprs
     in
-    List.fold_right (fun (cont_id, expr) next ->
-        Let_cont(cont_id, expr, next)
-      ) exprs entry
+    let expr =
+      List.fold_right (fun (cont_id, expr) next ->
+          Let_cont(cont_id, expr, next)
+        ) exprs entry
+    in
+    let _, body =
+      List.fold_right (fun var (i, expr) ->
+          i - 1, Let_aexp(var, Param (i - 1), expr))
+        params (n, expr)
+    in body
   in
   let+ (body, vars) = get_vars compile_body in
   { fun_name = fun_def.fun_name;
