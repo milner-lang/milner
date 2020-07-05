@@ -14,17 +14,23 @@ type status =
   | External of Type.t
   | Internal of Ir.fun_def
 
-type t = {
-    llctx : Llvm.llcontext;
+(** The state associated with the entire codegen phase *)
+type global = {
     llmod : Llvm.llmodule;
+    llctx : Llvm.llcontext;
+    prelude : prelude;
+    poly_funs : (string, status) Hashtbl.t;
+    layout : Llvm_target.DataLayout.t;
+  }
+
+(** The state associated with the instantiation of a function *)
+type t = {
     llbuilder : Llvm.llbuilder;
     llvals : Llvm.llvalue Vartbl.t;
     llfun : Llvm.llvalue;
     bbs : (int, Llvm.llbasicblock) Hashtbl.t;
     regs : (int, Llvm.llvalue) Hashtbl.t;
     real_params : Llvm.lltype option list;
-    prelude : prelude;
-    poly_funs : (string, status) Hashtbl.t;
     ty_args : Type.t array;
   }
 
@@ -108,25 +114,25 @@ let real_param_idx idx list =
   in loop 0 0 list
 
 (** The unit type is erased. *)
-let rec emit_aexp t = function
+let rec emit_aexp global t = function
   | Ir.Param idx ->
      (* If the variable doesn't map to anything, it must have an erased type *)
      Option.map (Llvm.param t.llfun) (real_param_idx idx t.real_params)
   | Ir.Global(name, targs) ->
-     begin match Hashtbl.find t.poly_funs name with
+     begin match Hashtbl.find global.poly_funs name with
      | External _ ->
-        begin match Llvm.lookup_function name t.llmod with
+        begin match Llvm.lookup_function name global.llmod with
         | None -> assert false
         | Some func -> Some func
         end
      | Internal fun_def ->
         let mangled_name = mangle_fun targs name fun_def.Ir.fun_ty in
-        begin match Llvm.lookup_function mangled_name t.llmod with
-        | None -> Some (emit_fun t.prelude t.poly_funs t.llmod targs fun_def)
+        begin match Llvm.lookup_function mangled_name global.llmod with
+        | None -> Some (emit_fun global targs fun_def)
         | Some func -> Some func
         end
      end
-  | Ir.Int32 n -> Some (Llvm.const_int (Llvm.i32_type t.llctx) n)
+  | Ir.Int32 n -> Some (Llvm.const_int (Llvm.i32_type global.llctx) n)
   | Ir.String s ->
      Some (Llvm.build_global_stringptr s "" t.llbuilder)
   | Ir.Var v ->
@@ -135,8 +141,8 @@ let rec emit_aexp t = function
   | Ir.Reg n -> Some (Hashtbl.find t.regs n)
   | Ir.Unit -> None
 
-and emit_cmp kind t dest lhs rhs =
-  match emit_aexp t lhs, emit_aexp t rhs with
+and emit_cmp kind global t dest lhs rhs =
+  match emit_aexp global t lhs, emit_aexp global t rhs with
   | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
   | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
   | Some _, None -> failwith "Unreachable: rhs cannot be unit"
@@ -146,10 +152,10 @@ and emit_cmp kind t dest lhs rhs =
      in
      Hashtbl.add t.regs dest llval
 
-and emit_expr t = function
+and emit_expr global t = function
   | Ir.Switch(scrut, cases, Block default) ->
      let default = Hashtbl.find t.bbs default in
-     begin match emit_aexp t scrut with
+     begin match emit_aexp global t scrut with
      | None -> ignore (Llvm.build_br default t.llbuilder)
      | Some scrut ->
         let sw =
@@ -157,7 +163,7 @@ and emit_expr t = function
             (Ir.IntMap.cardinal cases) t.llbuilder
         in
         Ir.IntMap.iter (fun idx (Ir.Block bb) ->
-            let idx = Llvm.const_int (Llvm.i32_type t.llctx) idx in
+            let idx = Llvm.const_int (Llvm.i32_type global.llctx) idx in
             let bb = Hashtbl.find t.bbs bb in
             Llvm.add_case sw idx bb) cases
      end
@@ -165,7 +171,7 @@ and emit_expr t = function
      let bb = Hashtbl.find t.bbs bb in
      ignore (Llvm.build_br bb t.llbuilder)
   | Ir.If(test, Block then_, Block else_) ->
-     begin match emit_aexp t test with
+     begin match emit_aexp global t test with
      | None -> failwith "Unreachable: Test is erased"
      | Some test ->
         let then_ = Hashtbl.find t.bbs then_ in
@@ -173,28 +179,28 @@ and emit_expr t = function
         ignore (Llvm.build_cond_br test then_ else_ t.llbuilder)
      end
   | Ir.Let_aexp(dest, aexp, next) ->
-     begin match emit_aexp t aexp with
+     begin match emit_aexp global t aexp with
      | None -> ()
      | Some llval ->
         let loc = Vartbl.find t.llvals dest in
         ignore (Llvm.build_store llval loc t.llbuilder)
      end;
-     emit_expr t next
+     emit_expr global t next
   | Ir.Let_app(dest, f, args, next) ->
-     begin match emit_aexp t f with
+     begin match emit_aexp global t f with
      | None -> failwith "Unreachable: Function is not erased"
      | Some f ->
         let args =
-          List.map (emit_aexp t) args |> remove_nones |> Array.of_list
+          List.map (emit_aexp global t) args |> remove_nones |> Array.of_list
         in
         let llval = Llvm.build_call f args "" t.llbuilder in
-        begin match transl_ty t.llctx t.ty_args (Var.ty dest) with
+        begin match transl_ty global.llctx t.ty_args (Var.ty dest) with
         | None -> ()
         | Some _ ->
            let loc = Vartbl.find t.llvals dest in
            ignore (Llvm.build_store llval loc t.llbuilder);
         end;
-        emit_expr t next
+        emit_expr global t next
      end
   | Ir.Let_get_tag(_, _, _) ->
      failwith "TODO"
@@ -202,74 +208,70 @@ and emit_expr t = function
      failwith "TODO"
   | Ir.Let_select_tag _ -> failwith "TODO"
   | Ir.Let_eqint32(dest, lhs, rhs, next) ->
-     emit_cmp Llvm.Icmp.Eq t dest lhs rhs;
-     emit_expr t next
+     emit_cmp Llvm.Icmp.Eq global t dest lhs rhs;
+     emit_expr global t next
   | Ir.Let_gtint32(dest, lhs, rhs, next) ->
-     emit_cmp Llvm.Icmp.Sgt t dest lhs rhs;
-     emit_expr t next
+     emit_cmp Llvm.Icmp.Sgt global t dest lhs rhs;
+     emit_expr global t next
   | Ir.Let_strcmp(dest, lhs, rhs, next) ->
-     begin match emit_aexp t lhs, emit_aexp t rhs with
+     begin match emit_aexp global t lhs, emit_aexp global t rhs with
      | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
      | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
      | Some _, None -> failwith "Unreachable: rhs cannot be unit"
      | Some lhs, Some rhs ->
         let llval =
-          Llvm.build_call t.prelude.strcmp [|lhs; rhs|]
+          Llvm.build_call global.prelude.strcmp [|lhs; rhs|]
             ("tmp" ^ Int.to_string dest) t.llbuilder
         in
         Hashtbl.add t.regs dest llval;
-        emit_expr t next
+        emit_expr global t next
      end
   | Ir.Let_cont(bbname, cont, next) ->
-     let bb = Llvm.append_block t.llctx (Int.to_string bbname) t.llfun in
+     let bb = Llvm.append_block global.llctx (Int.to_string bbname) t.llfun in
      Hashtbl.add t.bbs bbname bb;
      (* Important: Must visit [next] FIRST because it may define registers used
         in the continuation *)
-     emit_expr t next;
+     emit_expr global t next;
      let curr_bb = Llvm.insertion_block t.llbuilder in
      Llvm.position_at_end bb t.llbuilder;
-     emit_expr t cont;
+     emit_expr global t cont;
      Llvm.position_at_end curr_bb t.llbuilder
   | Ir.Return aexp ->
-     match emit_aexp t aexp with
+     match emit_aexp global t aexp with
      | None -> ignore (Llvm.build_ret_void t.llbuilder)
      | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
 
-and emit_fun prelude poly_funs llmod ty_args fun_def =
+and emit_fun global ty_args fun_def =
   let mangled = mangle_fun ty_args fun_def.Ir.fun_name fun_def.Ir.fun_ty in
-  match Llvm.lookup_function mangled llmod with
+  match Llvm.lookup_function mangled global.llmod with
   | Some func -> func
   | None ->
-     let llctx = Llvm.module_context llmod in
+     let llctx = Llvm.module_context global.llmod in
      let real_params, ret_ty = transl_fun_ty llctx ty_args fun_def.Ir.fun_ty in
      let param_tys = real_params |> remove_nones |> Array.of_list in
      let lltype = Llvm.function_type ret_ty param_tys in
-     let llfun = Llvm.define_function mangled lltype llmod in
+     let llfun = Llvm.define_function mangled lltype global.llmod in
      let entry = Llvm.entry_block llfun in
      let llbuilder = Llvm.builder_at_end llctx entry in
      let t = {
-         llctx;
-         llmod;
          llbuilder;
          llfun;
          llvals = Vartbl.create (List.length fun_def.fun_vars);
          bbs = Hashtbl.create 10;
          regs = Hashtbl.create 10;
          real_params;
-         prelude;
-         poly_funs;
          ty_args;
        }
      in
      (* Allocate stack space for all local variables *)
      List.iter (fun var ->
-         match transl_ty t.llctx ty_args (Var.ty var) with
+         match transl_ty global.llctx ty_args (Var.ty var) with
          | None -> ()
          | Some mach_ty ->
             let llval = Llvm.build_alloca mach_ty "" llbuilder in
             Vartbl.add t.llvals var llval
        ) fun_def.fun_vars;
-     emit_expr t fun_def.fun_body;
+     emit_expr global t fun_def.fun_body;
      llfun
 
 let emit_module llctx name prog =
@@ -281,8 +283,12 @@ let emit_module llctx name prog =
       let ty = Llvm.function_type (Llvm.i32_type llctx) [| cstr_ty; cstr_ty |]
       in Llvm.declare_function "strcmp" ty llmod
     in
-    let prelude = {
-        strcmp
+    let global = {
+        llctx;
+        llmod;
+        prelude = { strcmp };
+        poly_funs;
+        layout = Llvm_target.DataLayout.of_string (Llvm.data_layout llmod)
       }
     in
     List.iter (function
@@ -300,7 +306,7 @@ let emit_module llctx name prog =
            end
         | Ir.Fun fun_def ->
            if fun_def.Ir.fun_poly = 0 then
-             ignore (emit_fun prelude poly_funs llmod [||] fun_def)
+             ignore (emit_fun global [||] fun_def)
       ) prog.Ir.decls;
     llmod
   with

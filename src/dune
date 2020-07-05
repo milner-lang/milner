@@ -4,5 +4,5 @@
 
 (library
   (name milner)
-  (libraries llvm menhirLib sedlex)
+  (libraries llvm llvm.target menhirLib sedlex)
   (preprocess (pps sedlex.ppx)))
