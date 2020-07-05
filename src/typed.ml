@@ -9,6 +9,7 @@ type pat = {
   }
 
 and pat_node =
+  | Constr_pat of Type.t * Type.adt * int * pat list
   | Int_pat of Type.t * int
   | Str_pat of string
   | Wild_pat

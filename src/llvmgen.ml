@@ -30,23 +30,23 @@ type t = {
 
 let with_module llctx name f =
   let llmod = Llvm.create_module llctx name in
-  Fun.protect (fun () -> f llmod) ~finally:(fun () -> Llvm.dispose_module llmod)
+  Fun.protect (fun () -> f llmod)
+    ~finally:(fun () -> Llvm.dispose_module llmod)
 
 let remove_nones list = List.filter_map Fun.id list
 
 let rec mangle_ty type_args ty =
   match UnionFind.find ty with
+  | UnionFind.Value (Type.Constr adt) -> adt.Type.adt_name
   | UnionFind.Value (Type.Prim prim) ->
+     (* Ints and nats share the same machine representation, so instantiations
+        for ints and nats can share the same code *)
      begin match prim with
      | Type.Cstr -> "cstr"
-     | Type.Nat8 -> "nat8"
-     | Type.Int8 -> "int8"
-     | Type.Nat16 -> "nat16"
-     | Type.Int16 -> "int16"
-     | Type.Nat32 -> "nat32"
-     | Type.Int32 -> "int32"
-     | Type.Nat64 -> "nat64"
-     | Type.Int64 -> "int64"
+     | Type.Nat8 | Type.Int8 -> "int8"
+     | Type.Nat16 | Type.Int16 -> "int16"
+     | Type.Nat32 | Type.Int32 -> "int32"
+     | Type.Nat64 | Type.Int64 -> "int64"
      | Type.Unit -> "unit"
      end
   | UnionFind.Value (Type.Fun _fun_ty) -> ""
@@ -67,6 +67,7 @@ let mangle_fun type_args name fun_ty =
 (** The unit type does not translate into a machine type. *)
 let rec transl_ty llctx ty_args ty =
   match UnionFind.find ty with
+  | UnionFind.Value (Type.Constr _) -> failwith "TODO"
   | UnionFind.Value (Type.Prim prim) ->
      begin match prim with
      | Type.Cstr -> Some (Llvm.pointer_type (Llvm.i8_type llctx))
@@ -195,6 +196,11 @@ and emit_expr t = function
         end;
         emit_expr t next
      end
+  | Ir.Let_get_tag(_, _, _) ->
+     failwith "TODO"
+  | Ir.Let_get_member(_, _, _, _) ->
+     failwith "TODO"
+  | Ir.Let_select_tag _ -> failwith "TODO"
   | Ir.Let_eqint32(dest, lhs, rhs, next) ->
      emit_cmp Llvm.Icmp.Eq t dest lhs rhs;
      emit_expr t next
