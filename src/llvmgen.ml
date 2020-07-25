@@ -6,6 +6,17 @@ module Vartbl =
         let equal lhs rhs = Var.compare lhs rhs = 0
       end)
 
+type datacon =
+  | Tag_Uninhabited
+  | Tag_Zero
+  | Tag_Type of Llvm.lltype
+
+type datatype =
+  | Uninhabited
+  | Zero
+  | Product of Llvm.lltype
+  | Sum of Llvm.lltype * datacon array
+
 type prelude = {
     strcmp : Llvm.llvalue;
   }
@@ -19,6 +30,7 @@ type global = {
     llmod : Llvm.llmodule;
     llctx : Llvm.llcontext;
     prelude : prelude;
+    types : (string, datatype) Hashtbl.t;
     poly_funs : (string, status) Hashtbl.t;
     layout : Llvm_target.DataLayout.t;
   }
@@ -49,10 +61,10 @@ let rec mangle_ty type_args ty =
         for ints and nats can share the same code *)
      begin match prim with
      | Type.Cstr -> "cstr"
-     | Type.Nat8 | Type.Int8 -> "int8"
-     | Type.Nat16 | Type.Int16 -> "int16"
-     | Type.Nat32 | Type.Int32 -> "int32"
-     | Type.Nat64 | Type.Int64 -> "int64"
+     | Type.Num(_, Type.Sz8) -> "int8"
+     | Type.Num(_, Type.Sz16) -> "int16"
+     | Type.Num(_, Type.Sz32) -> "int32"
+     | Type.Num(_, Type.Sz64) -> "int64"
      | Type.Unit -> "unit"
      end
   | UnionFind.Value (Type.Fun _fun_ty) -> ""
@@ -70,35 +82,46 @@ let mangle_fun type_args name fun_ty =
     ) fun_ty.Type.dom;
   Buffer.contents buf
 
+let transl_size llctx = function
+  | Type.Sz8 -> Llvm.i8_type llctx
+  | Type.Sz16 -> Llvm.i16_type llctx
+  | Type.Sz32 -> Llvm.i32_type llctx
+  | Type.Sz64 -> Llvm.i64_type llctx
+
 (** The unit type does not translate into a machine type. *)
-let rec transl_ty llctx ty_args ty =
+let rec transl_ty global ty_args ty =
+  let llctx = global.llctx in
   match UnionFind.find ty with
-  | UnionFind.Value (Type.Constr _) -> failwith "TODO"
+  | UnionFind.Value (Type.Constr _adt) ->
+     let mangled = mangle_ty [||] ty in
+     begin match Hashtbl.find global.types mangled with
+     | Uninhabited -> None
+     | Zero -> None
+     | Product ty -> Some ty
+     | Sum(ty, _) -> Some ty
+     end
   | UnionFind.Value (Type.Prim prim) ->
      begin match prim with
      | Type.Cstr -> Some (Llvm.pointer_type (Llvm.i8_type llctx))
-     | Type.Nat8 | Type.Int8 -> Some (Llvm.i8_type llctx)
-     | Type.Nat16 | Type.Int16 -> Some (Llvm.i16_type llctx)
-     | Type.Nat32 | Type.Int32 -> Some (Llvm.i32_type llctx)
-     | Type.Nat64 | Type.Int64 -> Some (Llvm.i64_type llctx)
+     | Type.Num(_, sz) -> Some (transl_size llctx sz)
      | Type.Unit -> None
      end
   | UnionFind.Value (Type.Fun fun_ty) ->
-     let params, ret = transl_fun_ty llctx ty_args fun_ty in
+     let params, ret = transl_fun_ty global ty_args fun_ty in
      let params = params |> remove_nones |> Array.of_list in
      Some (Llvm.function_type ret params)
   | UnionFind.Value (Type.Pointer _) ->
      Some (Llvm.pointer_type (Llvm.i8_type llctx))
-  | UnionFind.Value (Type.Rigid v) -> transl_ty llctx ty_args ty_args.(v)
+  | UnionFind.Value (Type.Rigid v) -> transl_ty global ty_args ty_args.(v)
   | UnionFind.Root _ -> failwith "Unsolved type"
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
-and transl_fun_ty llctx ty_args fun_ty =
-  let params = List.map (transl_ty llctx ty_args) fun_ty.Type.dom in
+and transl_fun_ty global ty_args fun_ty =
+  let params = List.map (transl_ty global ty_args) fun_ty.Type.dom in
   let ret =
-    match transl_ty llctx ty_args fun_ty.Type.codom with
-    | None -> Llvm.void_type llctx
+    match transl_ty global ty_args fun_ty.Type.codom with
+    | None -> Llvm.void_type global.llctx
     | Some ty -> ty
   in
   (params, ret)
@@ -153,8 +176,21 @@ and emit_cmp kind global t dest lhs rhs =
      Hashtbl.add t.regs dest llval
 
 and emit_expr global t = function
-  | Ir.Switch(scrut, cases, Block default) ->
-     let default = Hashtbl.find t.bbs default in
+  | Ir.Switch(ty, scrut, cases, default) ->
+     let size = match UnionFind.find ty with
+       | UnionFind.Value (Type.Prim (Type.Num(_, sz))) -> sz
+       | _ -> failwith "Unreachable: Not an int"
+     in
+     let default = match default with
+       | Some (Block default) -> Hashtbl.find t.bbs default
+       | None ->
+          let bb = Llvm.append_block global.llctx "" t.llfun in
+          let curr_bb = Llvm.insertion_block t.llbuilder in
+          Llvm.position_at_end bb t.llbuilder;
+          ignore (Llvm.build_unreachable t.llbuilder);
+          Llvm.position_at_end curr_bb t.llbuilder;
+          bb
+     in
      begin match emit_aexp global t scrut with
      | None -> ignore (Llvm.build_br default t.llbuilder)
      | Some scrut ->
@@ -163,7 +199,7 @@ and emit_expr global t = function
             (Ir.IntMap.cardinal cases) t.llbuilder
         in
         Ir.IntMap.iter (fun idx (Ir.Block bb) ->
-            let idx = Llvm.const_int (Llvm.i32_type global.llctx) idx in
+            let idx = Llvm.const_int (transl_size global.llctx size) idx in
             let bb = Hashtbl.find t.bbs bb in
             Llvm.add_case sw idx bb) cases
      end
@@ -194,7 +230,7 @@ and emit_expr global t = function
           List.map (emit_aexp global t) args |> remove_nones |> Array.of_list
         in
         let llval = Llvm.build_call f args "" t.llbuilder in
-        begin match transl_ty global.llctx t.ty_args (Var.ty dest) with
+        begin match transl_ty global t.ty_args (Var.ty dest) with
         | None -> ()
         | Some _ ->
            let loc = Vartbl.find t.llvals dest in
@@ -202,11 +238,35 @@ and emit_expr global t = function
         end;
         emit_expr global t next
      end
-  | Ir.Let_get_tag(_, _, _) ->
-     failwith "TODO"
-  | Ir.Let_get_member(_, _, _, _) ->
-     failwith "TODO"
-  | Ir.Let_select_tag _ -> failwith "TODO"
+  | Ir.Let_get_tag(tag_reg, scrut, next) ->
+     let scrut_llval = Vartbl.find t.llvals scrut in
+     let tagval = Llvm.build_gep scrut_llval [||] "" t.llbuilder in
+     Hashtbl.add t.regs tag_reg tagval;
+     emit_expr global t next
+  | Ir.Let_get_member(dest, reg, idx, next) ->
+     let casted = Hashtbl.find t.regs reg in
+     let llval =
+       Llvm.build_gep casted
+         [|Llvm.const_int (Llvm.i32_type global.llctx) idx|] "" t.llbuilder
+     in
+     Vartbl.add t.llvals dest llval;
+     emit_expr global t next
+  | Ir.Let_select_tag(reg, v, constr, next) ->
+     let llval = Vartbl.find t.llvals v in
+     let mangled = mangle_ty t.ty_args (Var.ty v) in
+     begin match Hashtbl.find_opt global.types mangled with
+     | Some (Sum(_, constrs)) ->
+        begin match constrs.(constr) with
+        | Tag_Type llty ->
+           let casted = Llvm.build_bitcast llval llty "" t.llbuilder in
+           Hashtbl.add t.regs reg casted;
+           emit_expr global t next
+        | Tag_Zero -> emit_expr global t next
+        | Tag_Uninhabited -> ignore (Llvm.build_unreachable t.llbuilder)
+        end
+     | Some _ -> failwith "Not a sum type"
+     | None -> failwith "Mangled type not found"
+     end
   | Ir.Let_eqint32(dest, lhs, rhs, next) ->
      emit_cmp Llvm.Icmp.Eq global t dest lhs rhs;
      emit_expr global t next
@@ -247,7 +307,8 @@ and emit_fun global ty_args fun_def =
   | Some func -> func
   | None ->
      let llctx = Llvm.module_context global.llmod in
-     let real_params, ret_ty = transl_fun_ty llctx ty_args fun_def.Ir.fun_ty in
+     let real_params, ret_ty =
+       transl_fun_ty global ty_args fun_def.Ir.fun_ty in
      let param_tys = real_params |> remove_nones |> Array.of_list in
      let lltype = Llvm.function_type ret_ty param_tys in
      let llfun = Llvm.define_function mangled lltype global.llmod in
@@ -265,7 +326,7 @@ and emit_fun global ty_args fun_def =
      in
      (* Allocate stack space for all local variables *)
      List.iter (fun var ->
-         match transl_ty global.llctx ty_args (Var.ty var) with
+         match transl_ty global ty_args (Var.ty var) with
          | None -> ()
          | Some mach_ty ->
             let llval = Llvm.build_alloca mach_ty "" llbuilder in
@@ -287,6 +348,7 @@ let emit_module llctx name prog =
         llctx;
         llmod;
         prelude = { strcmp };
+        types = Hashtbl.create 33;
         poly_funs;
         layout = Llvm_target.DataLayout.of_string (Llvm.data_layout llmod)
       }
@@ -299,7 +361,7 @@ let emit_module llctx name prog =
       ) prog.Ir.decls;
     List.iter (function
         | Ir.External(name, ty) ->
-           begin match transl_ty llctx [||] ty with
+           begin match transl_ty global [||] ty with
            | Some ty ->
               ignore (Llvm.declare_function name ty llmod)
            | None -> failwith "External symbol not a function!"
