@@ -10,11 +10,11 @@ type error =
   | Unimplemented of string
 
 let string_of_error = function
-  | Redefined s -> "Redefined " ^ s
-  | Undefined s -> "Undefined " ^ s
-  | Undefined_tvar s -> "Undefined type variable " ^ s
-  | Unification -> "Unification"
-  | Unimplemented s -> "Unimplemented " ^ s
+  | Redefined s -> "Elab: Redefined " ^ s
+  | Undefined s -> "Elab: Undefined " ^ s
+  | Undefined_tvar s -> "Elab: Undefined type variable " ^ s
+  | Unification -> "Elab: Unification"
+  | Unimplemented s -> "Elab: Unimplemented " ^ s
 
 type state = {
     tycons : (string, Type.t) Hashtbl.t;
@@ -43,7 +43,8 @@ let throw e _ s = (Error e, s)
 let init_state () =
   let tycons = Hashtbl.create 20 in
   Hashtbl.add tycons "Cstring" (UnionFind.wrap (Type.Prim Type.Cstr));
-  Hashtbl.add tycons "Int32" (UnionFind.wrap (Type.Prim Type.Int32));
+  Hashtbl.add tycons "Int32"
+    (UnionFind.wrap (Type.Prim (Type.Num(Type.Signed, Type.Sz32))));
   { ty_gen = UnionFind.init_gen;
     var_gen = Var.init_gen;
     datacons = Hashtbl.create 20;
@@ -183,7 +184,7 @@ let read_ty_scheme tvars ty =
 
 let read_adt adt =
   let constrs = Array.make (List.length adt.Ast.adt_constrs) ("", []) in
-  let+ _ =
+  let* _ =
     fold_rightM (fun i (name, tys) ->
         let+ tys =
           mapM (fun ann -> read_ty StringMap.empty ann.Ast.annot_item) tys
@@ -219,7 +220,7 @@ let lit_has_ty lit ty =
   match lit with
   | Ast.Int_lit _ -> constrain (Type.Nat ty)
   | Ast.Int32_lit _ ->
-     let* int32 = create_ty (Type.Prim Type.Int32) in
+     let* int32 = create_ty (Type.Prim (Type.Num(Type.Signed, Type.Sz32))) in
      constrain (Type.Eq(ty, int32))
   | Ast.Str_lit _ ->
      let* cstr = create_ty (Type.Prim Type.Cstr) in
@@ -384,7 +385,7 @@ let elab_program prog =
            in
            Typed.Fun fun_def :: decls
         | Ast.Adt adt ->
-           let+ _adt = read_adt adt in
+           let+ _ = read_adt adt in
            decls
       ) [] prog.Ast.decls
   in

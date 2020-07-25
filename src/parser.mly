@@ -159,6 +159,13 @@ let pat :=
   | pat_atom
 
 let pat_atom :=
+  | constr = UIDENT; {
+      Ast.{
+        annot_item = Constr_pat(constr, []);
+        annot_begin = $symbolstartpos;
+        annot_end = $endpos;
+      }
+    }
   | id = LIDENT; {
     Ast.{
       annot_item = Var_pat id;

@@ -5,26 +5,30 @@ module StrMap = Map.Make(String)
 (** [ns] is type-level data intended to index [Var.t] *)
 type ns
 
+type reg = int
+
 type aexp =
   | Param of int
   | Global of string * Type.t array
   | Int32 of int
   | String of string
   | Var of ns Var.t
-  | Reg of int
+  | Reg of reg
   | Unit
 
 type cont = Block of int
 
 type expr =
-  | Switch of aexp * cont IntMap.t * cont
+  | Switch of Type.t * aexp * cont IntMap.t * cont option
   | Continue of cont
   | If of aexp * cont * cont
   | Let_aexp of ns Var.t * aexp * expr
   | Let_app of ns Var.t * aexp * aexp list * expr
-  | Let_get_member of ns Var.t * ns Var.t * int * expr
+  | Let_get_member of ns Var.t * reg * int * expr
   | Let_get_tag of int * ns Var.t * expr
-  | Let_select_tag of int * ns Var.t * int * expr
+  | Let_select_tag of reg * ns Var.t * int * expr
+  (** [Let_select_tag(reg, v, c, k)] casts tagged union [v] to case [c]
+      and stores result in register [reg] before continuing to [k] *)
   | Let_eqint32 of int * aexp * aexp * expr
   | Let_gtint32 of int * aexp * aexp * expr
   | Let_strcmp of int * aexp * aexp * expr
@@ -187,8 +191,8 @@ let split idx =
 let specialize array idx occs mat =
   let loccs, occ, roccs = split idx occs in
   let occs = List.rev_append loccs roccs in
-  let+ otherwise =
-    fold_leftM (fun otherwise row ->
+  let+ () =
+    iterM (fun row ->
         let lpats, (pat, _), rpats = split idx row.pats in
         match pat.Typed.pat_node with
         | Typed.Constr_pat(_, _, n, _pats) ->
@@ -197,15 +201,15 @@ let specialize array idx occs mat =
              { row with pats = (List.rev_append lpats rpats) }
            in
            array.(n) <- row :: array.(n);
-           return otherwise
-        | Typed.Wild_pat -> return (row :: otherwise)
+           return ()
+        | Typed.Wild_pat -> return ()
         | _ -> assert false
-      ) [] mat
+      ) mat
   in
   for i = 0 to Array.length array - 1 do
     array.(i) <- List.rev array.(i)
   done;
-  (occ, occs, List.rev otherwise)
+  (occ, occs)
 
 let specialize_int idx occs mat =
   let loccs, occ, roccs = split idx occs in
@@ -269,7 +273,7 @@ let rec compile_matrix (occs : ns Var.t list) mat =
 
      | Constr_pat(pat_var, idx, _ty, adt) ->
         let array = Array.make (Array.length adt.Type.adt_constrs) [] in
-        let* occ, occs', otherwise = specialize array idx occs mat in
+        let* occ, occs' = specialize array idx occs mat in
         let+ tag_reg = fresh_reg (* Register to store the tag *)
         and+ _, blocks, jumptable =
           Array.fold_left (fun acc mat ->
@@ -284,7 +288,7 @@ let rec compile_matrix (occs : ns Var.t list) mat =
               let rec get_members j = function
                 | [] -> branch
                 | var :: vars ->
-                   Let_get_member(var, occ, j, get_members (j + 1) vars)
+                   Let_get_member(var, casted_reg, j, get_members (j + 1) vars)
               in
               ( i + 1
               , ( block_id
@@ -292,14 +296,14 @@ let rec compile_matrix (occs : ns Var.t list) mat =
                 ) :: blocks
               , IntMap.add i (Block block_id) map )
             ) (return (0, [], IntMap.empty)) array
-        and+ default_id = fresh_block
-        and+ default = compile_matrix occs otherwise in
+        in
         let expr =
-          Let_cont(
-              default_id, default,
-              Let_get_tag(
-                  tag_reg, occ,
-                  Switch(Reg tag_reg, jumptable, Block default_id)))
+          let ty =
+            UnionFind.wrap (Type.Prim (Type.Num(Type.Unsigned, Type.Sz8)))
+          in
+          Let_get_tag(
+              tag_reg, occ,
+              Switch(ty, Reg tag_reg, jumptable, None))
         in
         let expr =
           List.fold_right (fun (block_id, branch) expr ->
@@ -322,12 +326,17 @@ let rec compile_matrix (occs : ns Var.t list) mat =
             ) map (return ([], IntMap.empty))
         and+ default_id = fresh_block
         and+ default = compile_matrix occs otherwise in
+        let ty =
+          UnionFind.wrap (Type.Prim (Type.Num(Type.Unsigned, Type.Sz32)))
+        in
+        let expr =
+          Let_cont(default_id, default,
+                   Switch(ty, Var occ, jumptable, Some (Block default_id)))
+        in
         let expr =
           List.fold_right (fun (block_id, branch) expr ->
               Let_cont(block_id, branch, expr)
-            ) blocks
-            (Let_cont(default_id, default,
-                      Switch(Var occ, jumptable, Block default_id)))
+            ) blocks expr
         in
         begin match pat_var with
         | None -> expr

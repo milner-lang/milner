@@ -1,13 +1,9 @@
+type size = Sz8 | Sz16 | Sz32 | Sz64
+type sign = Signed | Unsigned
+
 type prim =
   | Cstr
-  | Int8
-  | Nat8
-  | Int16
-  | Nat16
-  | Int32
-  | Nat32
-  | Int64
-  | Nat64
+  | Num of sign * size
   | Unit
 
 type ty =
@@ -35,19 +31,6 @@ type constraints =
 
 type forall = Forall of int * t
 
-let prim_eq lhs rhs = match lhs, rhs with
-  | Cstr, Cstr -> true
-  | Int8, Int8 -> true
-  | Nat8, Nat8 -> true
-  | Int16, Int16 -> true
-  | Nat16, Nat16 -> true
-  | Int32, Int32 -> true
-  | Nat32, Nat32 -> true
-  | Int64, Int64 -> true
-  | Nat64, Nat64 -> true
-  | Unit, Unit -> true
-  | _, _ -> false
-
 let rec unify lhs rhs = match lhs, rhs with
   | Constr adt, Constr adt' ->
      if adt.adt_name = adt'.adt_name then
@@ -57,7 +40,7 @@ let rec unify lhs rhs = match lhs, rhs with
   | Fun lhs, Fun rhs -> unify_fun lhs rhs
   | Pointer lhs, Pointer rhs -> UnionFind.union unify (Ok ()) lhs rhs
   | Prim lhs, Prim rhs ->
-     if prim_eq lhs rhs then
+     if lhs = rhs then
        Ok ()
      else
        Error "Unification fail"
