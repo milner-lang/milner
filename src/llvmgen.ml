@@ -8,7 +8,6 @@ module Vartbl =
 
 type datacon =
   | Tag_Uninhabited
-  | Tag_Zero
   | Tag_Type of Llvm.lltype
 
 type datatype =
@@ -53,9 +52,11 @@ let with_module llctx name f =
 
 let remove_nones list = List.filter_map Fun.id list
 
-let rec mangle_ty type_args ty =
+let rec mangle_ty global type_args ty =
   match UnionFind.find ty with
-  | UnionFind.Value (Type.Constr adt) -> adt.Type.adt_name
+  | UnionFind.Value (Type.Constr adt) ->
+     ignore (compile_datatype global adt);
+     adt.Type.adt_name
   | UnionFind.Value (Type.Prim prim) ->
      (* Ints and nats share the same machine representation, so instantiations
         for ints and nats can share the same code *)
@@ -69,31 +70,70 @@ let rec mangle_ty type_args ty =
      end
   | UnionFind.Value (Type.Fun _fun_ty) -> ""
   | UnionFind.Value (Type.Pointer _) -> "pointer"
-  | UnionFind.Value (Type.Rigid v) -> mangle_ty type_args type_args.(v)
+  | UnionFind.Value (Type.Rigid v) -> mangle_ty global type_args type_args.(v)
   | UnionFind.Root _ -> failwith "Unsolved type"
 
-let mangle_fun type_args name fun_ty =
+and compile_datatype global adt =
+  match Hashtbl.find_opt global.types adt.Type.adt_name with
+  | Some ty -> ty
+  | None ->
+     let datacon_lltys =
+       Array.map (fun (name, tys) ->
+           let tys =
+             Llvm.i8_type global.llctx
+             :: (List.map (transl_ty global [||]) tys |> remove_nones)
+             |> Array.of_list
+           in
+           let name = adt.Type.adt_name ^ "__" ^ name in
+           let ty = Llvm.named_struct_type global.llctx name in
+           Llvm.struct_set_body ty tys false;
+           ty
+         ) adt.Type.adt_constrs;
+     in
+     let size =
+       Array.fold_left (fun size ty ->
+           let n = Llvm_target.DataLayout.abi_size ty global.layout in
+           if Int64.compare size n = -1 then
+             n
+           else
+             size
+         ) Int64.zero datacon_lltys
+     in
+     let ty = Llvm.named_struct_type global.llctx adt.Type.adt_name in
+     Llvm.struct_set_body ty
+       [| Llvm.i8_type global.llctx
+        ; Llvm.array_type
+            (Llvm.i8_type global.llctx)
+            ((Int64.to_int size) - 1) |]
+       false;
+     let tys = Array.map (fun ty -> Tag_Type ty) datacon_lltys in
+     let sum_type = Sum(ty, tys) in
+     Hashtbl.add global.types adt.Type.adt_name sum_type;
+     sum_type
+
+
+and mangle_fun global type_args name fun_ty =
   let buf = Buffer.create 32 in
   Buffer.add_string buf name;
   List.iter (fun ty ->
-      let s = mangle_ty type_args ty in
+      let s = mangle_ty global type_args ty in
       Buffer.add_string buf (Int.to_string (String.length s));
       Buffer.add_string buf s
     ) fun_ty.Type.dom;
   Buffer.contents buf
 
-let transl_size llctx = function
+and transl_size llctx = function
   | Type.Sz8 -> Llvm.i8_type llctx
   | Type.Sz16 -> Llvm.i16_type llctx
   | Type.Sz32 -> Llvm.i32_type llctx
   | Type.Sz64 -> Llvm.i64_type llctx
 
 (** The unit type does not translate into a machine type. *)
-let rec transl_ty global ty_args ty =
+and transl_ty global ty_args ty =
   let llctx = global.llctx in
   match UnionFind.find ty with
   | UnionFind.Value (Type.Constr _adt) ->
-     let mangled = mangle_ty [||] ty in
+     let mangled = mangle_ty global [||] ty in
      begin match Hashtbl.find global.types mangled with
      | Uninhabited -> None
      | Zero -> None
@@ -149,7 +189,7 @@ let rec emit_aexp global t = function
         | Some func -> Some func
         end
      | Internal fun_def ->
-        let mangled_name = mangle_fun targs name fun_def.Ir.fun_ty in
+        let mangled_name = mangle_fun global targs name fun_def.Ir.fun_ty in
         begin match Llvm.lookup_function mangled_name global.llmod with
         | None -> Some (emit_fun global targs fun_def)
         | Some func -> Some func
@@ -238,30 +278,65 @@ and emit_expr global t = function
         end;
         emit_expr global t next
      end
+  | Ir.Let_constr(dest, constr, args, next) ->
+     let args = List.map (emit_aexp global t) args |> remove_nones in
+     let mangled = mangle_ty global t.ty_args (Var.ty dest) in
+     begin match Hashtbl.find_opt global.types mangled with
+     | Some (Sum (lltype, constrs)) ->
+        begin match constrs.(constr) with
+        | Tag_Type casted_ty ->
+           let llval = Llvm.build_alloca lltype "" t.llbuilder in
+           Vartbl.add t.llvals dest llval;
+           let casted =
+             Llvm.build_bitcast llval (Llvm.pointer_type casted_ty) ""
+               t.llbuilder
+           in
+           let tag = Llvm.build_struct_gep casted 0 "" t.llbuilder in
+           ignore
+             (Llvm.build_store
+                (Llvm.const_int (Llvm.i8_type global.llctx) constr) tag
+                t.llbuilder);
+           List.iteri (fun i llval ->
+               let ptr =
+                 Llvm.build_gep casted
+                   [|(Llvm.const_int (Llvm.i64_type global.llctx) (i + 1))|] ""
+                   t.llbuilder
+               in
+               ignore (Llvm.build_store llval ptr t.llbuilder)
+             ) args;
+           emit_expr global t next
+        | Tag_Uninhabited -> ignore (Llvm.build_unreachable t.llbuilder)
+        end
+     | Some Uninhabited -> ignore (Llvm.build_unreachable t.llbuilder)
+     | Some Zero -> emit_expr global t next
+     | Some (Product _) -> failwith "Unreachable: Constr product"
+     | None -> failwith "datatype not found"
+     end
   | Ir.Let_get_tag(tag_reg, scrut, next) ->
      let scrut_llval = Vartbl.find t.llvals scrut in
-     let tagval = Llvm.build_gep scrut_llval [||] "" t.llbuilder in
-     Hashtbl.add t.regs tag_reg tagval;
+     let ptr = Llvm.build_struct_gep scrut_llval 0 "" t.llbuilder in
+     let tag = Llvm.build_load ptr "" t.llbuilder in
+     Hashtbl.add t.regs tag_reg tag;
      emit_expr global t next
   | Ir.Let_get_member(dest, reg, idx, next) ->
      let casted = Hashtbl.find t.regs reg in
      let llval =
-       Llvm.build_gep casted
-         [|Llvm.const_int (Llvm.i32_type global.llctx) idx|] "" t.llbuilder
+       Llvm.build_struct_gep casted (idx + 1) "" t.llbuilder
      in
      Vartbl.add t.llvals dest llval;
      emit_expr global t next
   | Ir.Let_select_tag(reg, v, constr, next) ->
      let llval = Vartbl.find t.llvals v in
-     let mangled = mangle_ty t.ty_args (Var.ty v) in
+     let mangled = mangle_ty global t.ty_args (Var.ty v) in
      begin match Hashtbl.find_opt global.types mangled with
      | Some (Sum(_, constrs)) ->
         begin match constrs.(constr) with
         | Tag_Type llty ->
-           let casted = Llvm.build_bitcast llval llty "" t.llbuilder in
+           let casted =
+             Llvm.build_bitcast llval (Llvm.pointer_type llty) "" t.llbuilder
+           in
            Hashtbl.add t.regs reg casted;
            emit_expr global t next
-        | Tag_Zero -> emit_expr global t next
         | Tag_Uninhabited -> ignore (Llvm.build_unreachable t.llbuilder)
         end
      | Some _ -> failwith "Not a sum type"
@@ -302,7 +377,9 @@ and emit_expr global t = function
      | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
 
 and emit_fun global ty_args fun_def =
-  let mangled = mangle_fun ty_args fun_def.Ir.fun_name fun_def.Ir.fun_ty in
+  let mangled =
+    mangle_fun global ty_args fun_def.Ir.fun_name fun_def.Ir.fun_ty
+  in
   match Llvm.lookup_function mangled global.llmod with
   | Some func -> func
   | None ->

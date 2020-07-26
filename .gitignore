@@ -3,6 +3,7 @@ _build
 .merlin
 *.o
 *.s
+*.ll
 
 *.aux
 *.log

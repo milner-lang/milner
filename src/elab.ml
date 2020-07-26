@@ -135,6 +135,10 @@ let find name env s =
      | Some ty -> (Ok { data = Global ty; ex = L.empty; c = L.empty }, s)
      | None -> (Error (Undefined name), s)
 
+let declare_ty name ty _ s =
+  Hashtbl.add s.tycons name ty;
+  (Ok { data = (); ex = L.empty; c = L.empty }, s)
+
 let find_tcon name _ s =
   match Hashtbl.find_opt s.tycons name with
   | None -> (Error (Undefined name), s)
@@ -194,11 +198,12 @@ let read_adt adt =
       0 adt.Ast.adt_constrs
   in
   let adt' = Type.{ adt_name = adt.Ast.adt_name; adt_constrs = constrs } in
-  let+ _ =
+  let* _ =
     fold_rightM (fun i (name, _) ->
         let+ () = declare_datacon name adt' i in
         i + 1
       ) 0 adt.Ast.adt_constrs in
+  let+ () = declare_ty adt.Ast.adt_name (UnionFind.wrap (Type.Constr adt')) in
   adt'
 
 let inst n ty _ s =
@@ -299,6 +304,22 @@ let rec expr_has_ty expr ty =
      let* arrow = create_ty (Type.Fun { dom = tys; codom = ty }) in
      let+ f = expr_has_ty f.annot_item arrow in
      Typed.Apply_expr(ty, f, args)
+  | Ast.Constr_expr(name, args) ->
+     let* adt, idx = find_datacon name in
+     let+ args =
+       let rec loop acc args tys =
+         match args, tys with
+         | [], [] -> return (List.rev acc)
+         | arg :: args, ty :: tys ->
+            let* arg = expr_has_ty arg.Ast.annot_item ty in
+            loop (arg :: acc) args tys
+         | _ :: _, [] | [], _ :: _ -> failwith "mismatch"
+       in
+       let _, tys = adt.Type.adt_constrs.(idx) in
+       loop [] args tys
+     in
+     let ty = UnionFind.wrap (Type.Constr adt) in
+     Typed.Constr_expr(ty, idx, args)
   | Ast.Seq_expr(e1, e2) ->
      let* unit = create_ty (Type.Prim Type.Unit) in
      let* e1 = expr_has_ty e1.annot_item unit in

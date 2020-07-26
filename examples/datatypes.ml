@@ -2,10 +2,16 @@ external puts : fun(Cstring) -> ()
 
 datatype Bool = False | True
 
-fun bool_to_int
-  | (False) = 0i32
-  | (True) = 1i32
+val f: fun(Bool) -> Int32
+fun f
+  | (False) =
+    puts("False");
+    0i32
+  | (True) =
+    puts("True");
+    1i32
 
+val main: fun() -> Int32
 fun main() =
   puts("Booleans");
-  0i32
+  f(False)
