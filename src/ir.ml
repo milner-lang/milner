@@ -24,6 +24,7 @@ type expr =
   | If of aexp * cont * cont
   | Let_aexp of ns Var.t * aexp * expr
   | Let_app of ns Var.t * aexp * aexp list * expr
+  | Let_constr of ns Var.t * int * aexp list * expr
   | Let_get_member of ns Var.t * reg * int * expr
   | Let_get_tag of int * ns Var.t * expr
   | Let_select_tag of reg * ns Var.t * int * expr
@@ -410,6 +411,14 @@ let rec compile_expr exp k =
              Let_app(v, f, args, body)
            ) args []
        )
+  | Typed.Constr_expr(ty, idx, args) ->
+     List.fold_left (fun k arg args ->
+         compile_expr arg (fun arg -> k (arg :: args))
+       ) (fun args ->
+         let* v = fresh ty in
+         let+ body = k (Var v) in
+         Let_constr(v, idx, args, body)
+       ) args []
   | Typed.Global_expr(name, targs) -> k (Global(name, targs))
   | Typed.Int_expr(_, n) -> k (Int32 n) (* Treat all ints as int32 for now *)
   | Typed.Str_expr s -> k (String s)

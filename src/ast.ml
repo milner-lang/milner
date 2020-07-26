@@ -31,6 +31,7 @@ type pat =
 
 type expr =
   | Apply_expr of expr annot * expr annot list
+  | Constr_expr of string * expr annot list
   | Lit_expr of literal
   | Seq_expr of expr annot * expr annot
   | Var_expr of string

@@ -227,6 +227,13 @@ let atom_expr :=
         annot_end = $endpos;
       }
   }
+  | id = UIDENT; {
+      Ast.{
+        annot_item = Constr_expr(id, []);
+        annot_begin = $symbolstartpos;
+        annot_end = $endpos;
+      }
+    }
   | id = LIDENT; {
       Ast.{
         annot_item = Var_expr id;
