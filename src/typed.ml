@@ -9,12 +9,14 @@ type pat = {
   }
 
 and pat_node =
+  | Constr_pat of Type.t * Type.adt * int * pat list
   | Int_pat of Type.t * int
   | Str_pat of string
   | Wild_pat
 
 type expr =
   | Apply_expr of Type.t * expr * expr list
+  | Constr_expr of Type.t * int * expr list
   | Global_expr of string * Type.t array
   | Int_expr of Type.t * int
   | Str_expr of string

@@ -11,6 +11,7 @@
 %token SEMICOLON
 %token UNDERSCORE
 %token AS
+%token DATATYPE
 %token EXTERNAL
 %token FORALL
 %token FUN
@@ -52,6 +53,32 @@ let decl :=
         annot_end = $endpos
       }
     }
+  | ~ = adt; {
+      Ast.{
+        annot_item = Ast.Adt adt;
+        annot_begin = $symbolstartpos;
+        annot_end = $endpos;
+      }
+    }
+
+let adt :=
+  DATATYPE; adt_name = UIDENT; adt_params = list(LIDENT); EQUALS; BAR?;
+  adt_constrs = separated_list(BAR, constr);
+    {
+      Ast.{
+        adt_name;
+        adt_params;
+        adt_constrs;
+      }
+    }
+
+let constr :=
+  | name = UIDENT; {
+      (name, [])
+    }
+  | name = UIDENT; LPAREN; tys = separated_nonempty_list(COMMA, ty); RPAREN; {
+    (name, tys)
+  }
 
 let external_decl := EXTERNAL; name = LIDENT; COLON; ~ = ty; {
     (name, ty)
@@ -132,6 +159,13 @@ let pat :=
   | pat_atom
 
 let pat_atom :=
+  | constr = UIDENT; {
+      Ast.{
+        annot_item = Constr_pat(constr, []);
+        annot_begin = $symbolstartpos;
+        annot_end = $endpos;
+      }
+    }
   | id = LIDENT; {
     Ast.{
       annot_item = Var_pat id;
@@ -193,6 +227,13 @@ let atom_expr :=
         annot_end = $endpos;
       }
   }
+  | id = UIDENT; {
+      Ast.{
+        annot_item = Constr_expr(id, []);
+        annot_begin = $symbolstartpos;
+        annot_end = $endpos;
+      }
+    }
   | id = LIDENT; {
       Ast.{
         annot_item = Var_expr id;
