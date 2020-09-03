@@ -243,8 +243,16 @@ and emit_expr global t = function
             let bb = Hashtbl.find t.bbs bb in
             Llvm.add_case sw idx bb) cases
      end
-  | Ir.Continue (Block bb) ->
+  | Ir.Continue(Block bb, args) ->
      let bb = Hashtbl.find t.bbs bb in
+     Ir.VarMap.iter (fun k v ->
+         match transl_ty global t.ty_args (Var.ty k) with
+         | None -> ()
+         | Some _ ->
+            let phi = Vartbl.find t.llvals k in
+            let var = Vartbl.find t.llvals v in
+            Llvm.add_incoming (var, Llvm.insertion_block t.llbuilder) phi
+       ) args;
      ignore (Llvm.build_br bb t.llbuilder)
   | Ir.If(test, Block then_, Block else_) ->
      begin match emit_aexp global t test with
@@ -361,13 +369,24 @@ and emit_expr global t = function
         Hashtbl.add t.regs dest llval;
         emit_expr global t next
      end
-  | Ir.Let_cont(bbname, cont, next) ->
+  | Ir.Let_cont(bbname, params, cont, next) ->
+     let curr_bb = Llvm.insertion_block t.llbuilder in
      let bb = Llvm.append_block global.llctx (Int.to_string bbname) t.llfun in
+     Llvm.position_at_end bb t.llbuilder;
+     List.iter (fun cont_param ->
+         match transl_ty global t.ty_args (Var.ty cont_param) with
+         | None -> ()
+         | Some llty ->
+            let phi =
+              Llvm.build_empty_phi (Llvm.pointer_type llty) "" t.llbuilder
+            in
+            Vartbl.add t.llvals cont_param phi
+       ) params;
      Hashtbl.add t.bbs bbname bb;
+     Llvm.position_at_end curr_bb t.llbuilder;
      (* Important: Must visit [next] FIRST because it may define registers used
         in the continuation *)
      emit_expr global t next;
-     let curr_bb = Llvm.insertion_block t.llbuilder in
      Llvm.position_at_end bb t.llbuilder;
      emit_expr global t cont;
      Llvm.position_at_end curr_bb t.llbuilder
