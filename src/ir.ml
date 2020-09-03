@@ -168,7 +168,7 @@ let fresh_block s =
     http://moscova.inria.fr/~maranget/papers/ml05e-maranget.pdf *)
 
 type row = {
-    pats : (Typed.pat * ns Var.t option) list;
+    pats : (ns Var.t option Typed.pat) list;
     action : cont;
     bindings : ns Var.t VarMap.t;
   }
@@ -184,14 +184,14 @@ type refutability =
 let find_refutable_pat =
   let rec loop idx wilds = function
     | [] -> Irrefutable (List.rev wilds)
-    | (Typed.{ pat_node = Constr_pat(ty, adt, _, _); _ }, var) :: _ ->
-       Constr_pat(var, idx, ty, adt)
-    | (Typed.{ pat_node = Int_pat _; _ }, var) :: _ ->
-       Int_pat(var, idx)
-    | (Typed.{ pat_node = Str_pat _; _ }, var) :: _ ->
-       Str_pat(var, idx)
-    | (Typed.{ pat_node = Wild_pat; _ }, var) :: pats ->
-       loop (idx + 1) (var :: wilds) pats
+    | Typed.{ pat_node = Constr_pat(ty, adt, _, _); pat_vars } :: _ ->
+       Constr_pat(pat_vars, idx, ty, adt)
+    | Typed.{ pat_node = Int_pat _; pat_vars } :: _ ->
+       Int_pat(pat_vars, idx)
+    | Typed.{ pat_node = Str_pat _; pat_vars } :: _ ->
+       Str_pat(pat_vars, idx)
+    | Typed.{ pat_node = Wild_pat; pat_vars } :: pats ->
+       loop (idx + 1) (pat_vars :: wilds) pats
   in loop 0 []
 
 (** [split idx list] splits [list] at position [idx] if [idx] is in bounds,
@@ -211,7 +211,7 @@ let specialize array idx occs pat_var mat =
   let occs = List.rev_append loccs roccs in
   let+ () =
     iterM (fun row ->
-        let lpats, (pat, _), rpats = split idx row.pats in
+        let lpats, pat, rpats = split idx row.pats in
         match pat.Typed.pat_node with
         | Typed.Constr_pat(_, _, n, _pats) ->
            (* TODO *)
@@ -240,7 +240,7 @@ let specialize_int idx occs pat_var mat =
   let occs = List.rev_append loccs roccs in
   let+ map, otherwise =
     fold_leftM (fun (map, otherwise) row ->
-        let lpats, (pat, _), rpats = split idx row.pats in
+        let lpats, pat, rpats = split idx row.pats in
         match pat.Typed.pat_node with
         | Typed.Int_pat(_, n) ->
            let row =
@@ -266,7 +266,7 @@ let specialize_str idx occs pat_var mat =
   let occs = List.rev_append loccs roccs in
   let+ map, otherwise =
     fold_leftM (fun (map, otherwise) row ->
-        let lpats, (pat, _), rpats = split idx row.pats in
+        let lpats, pat, rpats = split idx row.pats in
         match pat.Typed.pat_node with
         | Typed.Str_pat s ->
            let row =
@@ -449,6 +449,26 @@ let rec compile_expr exp k =
      let* var = find_var var in
      k (Var var)
 
+let rec refresh_pat pat =
+  let+ pat_vars = refresh pat.Typed.pat_vars
+  and+ pat_node = match pat.Typed.pat_node with
+    | Typed.Constr_pat(a, b, c, pats) ->
+       let+ pats = mapM refresh_pat pats in
+       Typed.Constr_pat(a, b, c, pats)
+    | Typed.Int_pat(a, b) -> return (Typed.Int_pat(a, b))
+    | Typed.Str_pat a -> return (Typed.Str_pat a)
+    | Typed.Wild_pat -> return Typed.Wild_pat
+  in { Typed.pat_vars; pat_node }
+
+let rec get_pat_vars acc pat =
+  let vars = match pat.Typed.pat_vars with
+    | None -> acc
+    | Some v -> v :: acc
+  in
+  match pat.Typed.pat_node with
+  | Typed.Constr_pat(_, _, _, pats) -> List.fold_left get_pat_vars vars pats
+  | _ -> vars
+
 let compile_fun fun_def =
   let Type.Forall(type_arity, ty) = fun_def.Typed.fun_ty in
   let arity = match UnionFind.find ty with
@@ -464,13 +484,8 @@ let compile_fun fun_def =
       | [] -> return (List.rev mat, List.rev exprs)
       | clause :: clauses ->
          let* cont_id = fresh_block
-         and* pats =
-           mapM (fun pat ->
-               let+ var = refresh pat.Typed.pat_vars in
-               (pat, var))
-             clause.Typed.clause_lhs
-         in
-         let cont_params = List.filter_map (fun (_, v) -> v) pats in
+         and* pats = mapM refresh_pat clause.Typed.clause_lhs in
+         let cont_params = List.fold_left get_pat_vars [] pats in
          create_matrix
            ({ pats; action = Block cont_id; bindings = VarMap.empty } :: mat)
            ((cont_id, cont_params, clause.Typed.clause_rhs) :: exprs)

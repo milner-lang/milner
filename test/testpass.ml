@@ -54,14 +54,14 @@ let test_dir dir =
   let handle = Unix.opendir dir in
   Fun.protect (fun () ->
       let rec loop () =
-          let str = Unix.readdir handle in
-          if str <> "." && str <> ".." then (
-            let filename = dir ^ "/" ^ str in
-            compile filename;
-            cc_compile filename;
-            run filename
-          );
-          loop ()
+        let str = Unix.readdir handle in
+        if str <> "." && str <> ".." then (
+          let filename = dir ^ "/" ^ str in
+          compile filename;
+          cc_compile filename;
+          run filename
+        );
+        loop ()
       in try loop () with End_of_file -> ()
     ) ~finally:(fun () -> Unix.closedir handle)
 

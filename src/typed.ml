@@ -3,13 +3,13 @@ module StringMap = Map.Make(String)
 (** [ns] is type-level data intended to index [Var.t] *)
 type ns
 
-type pat = {
-    pat_node : pat_node;
-    pat_vars : ns Var.t list;
+type 'a pat = {
+    pat_node : 'a pat_node;
+    pat_vars : 'a
   }
 
-and pat_node =
-  | Constr_pat of Type.t * Type.adt * int * pat list
+and 'a pat_node =
+  | Constr_pat of Type.t * Type.adt * int * 'a pat list
   | Int_pat of Type.t * int
   | Str_pat of string
   | Wild_pat
@@ -25,7 +25,7 @@ type expr =
   | Var_expr of ns Var.t
 
 type clause = {
-    clause_lhs : pat list;
+    clause_lhs : ns Var.t list pat list;
     clause_vars : ns Var.t StringMap.t;
     clause_rhs : expr;
   }
