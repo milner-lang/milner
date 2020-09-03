@@ -149,9 +149,19 @@ let lit :=
   | LPAREN; RPAREN; { Ast.Unit_lit }
 
 let pat :=
-  | pat = pat_atom; AS; id = LIDENT; {
+  | ~ = pat; AS; id = LIDENT; {
         Ast.{
           annot_item = As_pat(pat, id);
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
+  | pat_con
+
+let pat_con :=
+  | constr = UIDENT; LPAREN; pats = separated_list(COMMA, pat); RPAREN; {
+        Ast.{
+          annot_item = Constr_pat(constr, pats);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
         }

@@ -206,27 +206,45 @@ let split idx =
          loop (x :: acc) (i + 1) xs
   in loop [] 0
 
-let specialize array idx occs pat_var mat =
+let specialize array adt idx occs pat_var mat =
   let loccs, occ, roccs = split idx occs in
   let occs = List.rev_append loccs roccs in
   let+ () =
     iterM (fun row ->
         let lpats, pat, rpats = split idx row.pats in
         match pat.Typed.pat_node with
-        | Typed.Constr_pat(_, _, n, _pats) ->
-           (* TODO *)
+        | Typed.Constr_pat(_, _, n, pats) ->
            let row =
              { row with
-               pats = (List.rev_append lpats rpats)
+               pats = List.append pats (List.rev_append lpats rpats)
              ; bindings =
                  match pat_var with
                  | None -> row.bindings
                  | Some v -> VarMap.add v occ row.bindings
-             }
-           in
-           array.(n) <- row :: array.(n);
-           return ()
-        | Typed.Wild_pat -> return ()
+             } in
+           return (array.(n) <- row :: array.(n))
+        | Typed.Wild_pat ->
+           return (
+               Array.iteri (fun n mat ->
+                   let _, members = adt.Type.adt_constrs.(n) in
+                   let wilds =
+                     List.init (List.length members)
+                       (Fun.const
+                          { Typed.pat_node = Typed.Wild_pat
+                          ; pat_vars = None })
+                   in
+                   let row =
+                     { row with
+                       pats =
+                         List.rev_append wilds (List.rev_append lpats rpats)
+                       ; bindings =
+                           match pat_var with
+                           | None -> row.bindings
+                           | Some v -> VarMap.add v occ row.bindings
+                     } in
+                   array.(n) <- row :: mat
+                 ) array
+             )
         | _ -> assert false
       ) mat
   in
@@ -301,17 +319,13 @@ let compile_irrefutable row occs wilds =
 let rec compile_matrix (occs : ns Var.t list) mat =
   match mat with
   | [] -> throw "Incomplete pattern match"
-  | row :: mat' ->
+  | row :: _ ->
      match find_refutable_pat row.pats with
-     | Irrefutable wilds ->
-        begin match mat' with
-        | [] -> return (compile_irrefutable row occs wilds)
-        | _ :: _ -> throw "Unreachable code"
-        end
+     | Irrefutable wilds -> return (compile_irrefutable row occs wilds)
 
      | Constr_pat(pat_var, idx, _ty, adt) ->
         let array = Array.make (Array.length adt.Type.adt_constrs) [] in
-        let* occ, occs' = specialize array idx occs pat_var mat in
+        let* occ, occs' = specialize array adt idx occs pat_var mat in
         let+ tag_reg = fresh_reg (* Register to store the tag *)
         and+ _, blocks, jumptable =
           Array.fold_left (fun acc mat ->
@@ -348,7 +362,9 @@ let rec compile_matrix (occs : ns Var.t list) mat =
           ) blocks expr
 
      | Int_pat(pat_var, idx) ->
-        let* occ, occs', map, otherwise = specialize_int idx occs pat_var mat in
+        let* occ, occs', map, otherwise =
+          specialize_int idx occs pat_var mat
+        in
         let+ blocks, jumptable =
           IntMap.fold (fun n mat acc ->
               let+ blocks, map = acc
@@ -400,7 +416,9 @@ let rec compile_matrix (occs : ns Var.t list) mat =
                                 eq_result, Reg strtest_result, Int32 0,
                                 If(Reg eq_result, cont, Block gt_id))))))
         in
-        let* occ, occs', map, otherwise = specialize_str idx occs pat_var mat in
+        let* occ, occs', map, otherwise =
+          specialize_str idx occs pat_var mat
+        in
         let* blocks, jumptable =
           StrMap.fold (fun n mat acc ->
               let+ blocks, map = acc
