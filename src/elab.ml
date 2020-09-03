@@ -190,7 +190,7 @@ let read_ty_scheme tvars ty =
 let read_adt adt =
   let constrs = Array.make (List.length adt.Ast.adt_constrs) ("", []) in
   let* _ =
-    fold_rightM (fun i (name, tys) ->
+    fold_leftM (fun i (name, tys) ->
         let+ tys =
           mapM (fun ann -> read_ty StringMap.empty ann.Ast.annot_item) tys
         in
@@ -200,10 +200,10 @@ let read_adt adt =
   in
   let adt' = Type.{ adt_name = adt.Ast.adt_name; adt_constrs = constrs } in
   let* _ =
-    fold_rightM (fun i (name, _) ->
+    fold_leftM (fun i (name, _) ->
         let+ () = declare_datacon name adt' i in
-        i + 1
-      ) 0 adt.Ast.adt_constrs in
+        i + 1)
+      0 adt.Ast.adt_constrs in
   let+ () = declare_ty adt.Ast.adt_name (UnionFind.wrap (Type.Constr adt')) in
   adt'
 

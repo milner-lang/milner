@@ -21,4 +21,4 @@ fun g
 val main: fun() -> Int32
 fun main() =
   puts("Booleans");
-  f(False)
+  f(g(Some(5i32)))

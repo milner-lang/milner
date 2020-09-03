@@ -220,9 +220,16 @@ let seq_expr :=
   | apply_expr
 
 let apply_expr :=
-  | f = apply_expr; LPAREN; args = separated_list(COMMA, apply_expr); RPAREN; {
+  | f = apply_expr; LPAREN; args = separated_list(COMMA, expr); RPAREN; {
         Ast.{
           annot_item = Apply_expr(f, args);
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
+  | constr = UIDENT; LPAREN; args = separated_list(COMMA, expr); RPAREN; {
+        Ast.{
+          annot_item = Constr_expr(constr, args);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
         }

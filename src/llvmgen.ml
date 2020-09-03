@@ -305,11 +305,7 @@ and emit_expr global t = function
                 (Llvm.const_int (Llvm.i8_type global.llctx) constr) tag
                 t.llbuilder);
            List.iteri (fun i llval ->
-               let ptr =
-                 Llvm.build_gep casted
-                   [|(Llvm.const_int (Llvm.i64_type global.llctx) (i + 1))|] ""
-                   t.llbuilder
-               in
+               let ptr = Llvm.build_struct_gep casted (i + 1) "" t.llbuilder in
                ignore (Llvm.build_store llval ptr t.llbuilder)
              ) args;
            emit_expr global t next

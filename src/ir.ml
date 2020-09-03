@@ -276,8 +276,7 @@ let specialize_int idx occs pat_var mat =
         | Typed.Wild_pat -> return (map, row :: otherwise)
         | _ -> assert false
       ) (IntMap.empty, []) mat
-  in
-  (occ, occs, IntMap.map List.rev map, List.rev otherwise)
+  in (occ, occs, IntMap.map List.rev map, List.rev otherwise)
 
 let specialize_str idx occs pat_var mat =
   let loccs, occ, roccs = split idx occs in
@@ -302,8 +301,7 @@ let specialize_str idx occs pat_var mat =
         | Typed.Wild_pat -> return (map, row :: otherwise)
         | _ -> assert false
       ) (StrMap.empty, []) mat
-  in
-  (occ, occs, StrMap.map List.rev map, List.rev otherwise)
+  in (occ, occs, StrMap.map List.rev map, List.rev otherwise)
 
 let compile_irrefutable row occs wilds =
   let rec loop bindings = function
@@ -313,8 +311,7 @@ let compile_irrefutable row occs wilds =
     | _ :: occs, None :: wilds -> loop bindings (occs, wilds)
     | _ :: _, [] -> assert false
     | [], _ :: _ -> assert false
-  in
-  Continue(row.action, loop row.bindings (occs, wilds))
+  in Continue(row.action, loop row.bindings (occs, wilds))
 
 let rec compile_matrix (occs : ns Var.t list) mat =
   match mat with
