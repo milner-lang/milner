@@ -1,6 +1,12 @@
 module L = Dlist
 module IntMap = Map.Make(Int)
 module StrMap = Map.Make(String)
+module VarHash = struct
+  type t = Typed.ns Var.t
+  let hash = Var.hash
+  let equal x y = Var.compare x y = 0
+end
+module Vartbl = Hashtbl.Make(VarHash)
 
 (** [ns] is type-level data intended to index [Var.t] *)
 type ns
@@ -56,7 +62,7 @@ type state = {
     var_gen : ns Var.gen;
     reg_gen : int;
     block_gen : int;
-    var_map : (Typed.ns Var.t, ns Var.t) Hashtbl.t;
+    var_map : ns Var.t Vartbl.t;
   }
 
 type 'a t = state -> ('a * ns Var.t L.t, string) result * state
@@ -65,7 +71,7 @@ let init_state () = {
     var_gen = Var.init_gen;
     reg_gen = 0;
     block_gen = 0;
-    var_map = Hashtbl.create 100;
+    var_map = Vartbl.create 100;
   }
 
 let run action =
@@ -133,12 +139,12 @@ let refresh = function
      let* var' = fresh (Var.ty var)
      and* s = get_state in
      let+ () =
-       iterM (fun var -> return (Hashtbl.add s.var_map var var')) vars
+       iterM (fun var -> return (Vartbl.add s.var_map var var')) vars
      in
      Some var'
 
 let find_var var s =
-  match Hashtbl.find_opt s.var_map var with
+  match Vartbl.find_opt s.var_map var with
   | Some aexp -> (Ok (aexp, L.empty), s)
   | None -> failwith ("Unreachable: var not found " ^ Var.to_string var)
 
