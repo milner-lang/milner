@@ -6,10 +6,6 @@ module Vartbl =
         let equal lhs rhs = Var.compare lhs rhs = 0
       end)
 
-type datacon =
-  | Tag_uninhabited
-  | Tag_type of Llvm.lltype
-
 type datatype =
   | Uninhabited (** A type that cannot be constructed. *)
   | Zero (** An erased type. *)
@@ -17,7 +13,11 @@ type datatype =
   | Basic_sum of Llvm.lltype * Llvm.lltype option array
     (** The basic tagged union representation where the first member is the tag
         and the subsequent members are the product type for each constructor,
-        and the tags are numbered starting from 0. *)
+        and the tags are numbered starting from 0.
+
+        In the list of product types, [None] means that the product type is
+        uninhabited and [Some llty] means that [llty] is the castable struct
+        for the corresponding variant. *)
 
 type transl_ty =
   | Uninhabited_ty
@@ -65,6 +65,12 @@ let with_module llctx name f =
 
 let remove_nones list = List.filter_map Fun.id list
 
+(** This function returns:
+
+    - [None] if the list of types contains an uninhabited type.
+    - [Some tys] otherwise, where an element of [tys] is:
+      - [None] if it is erased
+      - [Some llty] otherwise *)
 let rec erase_types = function
   | [] -> Some []
   | Uninhabited_ty :: _ -> None
