@@ -37,7 +37,7 @@ type expr =
   | Let_aexp of ns Var.t * aexp * expr
   | Let_app of ns Var.t * aexp * aexp list * expr
   | Let_constr of ns Var.t * int * aexp list * expr
-  | Let_get_member of ns Var.t * reg * int * expr
+  | Let_get_member of ns Var.t * ns Var.t * reg * int * expr
   | Let_get_tag of int * ns Var.t * expr
   | Let_select_tag of reg * ns Var.t * int * expr
   (** [Let_select_tag(reg, v, c, k)] casts tagged union [v] to case [c]
@@ -128,6 +128,8 @@ let fresh ty s =
   let v, var_gen = Var.fresh s.var_gen ty in
   (Ok (v, L.singleton v), { s with var_gen })
 
+(** Phi variables don't get allocated on the stack, so don't add them to the
+    list of variables *)
 let fresh_phi ty s =
   let v, var_gen = Var.fresh s.var_gen ty in
   (Ok (v, L.empty), { s with var_gen })
@@ -222,29 +224,27 @@ let specialize array adt idx occs pat_var mat =
                  | None -> row.bindings
                  | Some v -> VarMap.add v occ row.bindings
              } in
-           return (array.(n) <- row :: array.(n))
+           array.(n) <- row :: array.(n);
+           return ()
         | Typed.Wild_pat ->
-           return (
-               Array.iteri (fun n mat ->
-                   let _, members = adt.Type.adt_constrs.(n) in
-                   let wilds =
-                     List.init (List.length members)
-                       (Fun.const
-                          { Typed.pat_node = Typed.Wild_pat
-                          ; pat_vars = None })
-                   in
-                   let row =
-                     { row with
-                       pats =
-                         List.rev_append wilds (List.rev_append lpats rpats)
-                       ; bindings =
-                           match pat_var with
-                           | None -> row.bindings
-                           | Some v -> VarMap.add v occ row.bindings
-                     } in
-                   array.(n) <- row :: mat
-                 ) array
-             )
+           Array.iteri (fun n mat ->
+               let _, members = adt.Type.adt_constrs.(n) in
+               let wilds =
+                 List.init (List.length members)
+                   (Fun.const
+                      { Typed.pat_node = Typed.Wild_pat
+                      ; pat_vars = None })
+               in
+               let row =
+                 { row with
+                   pats = List.rev_append wilds (List.rev_append lpats rpats)
+                 ; bindings =
+                     match pat_var with
+                     | None -> row.bindings
+                     | Some v -> VarMap.add v occ row.bindings
+                 } in
+               array.(n) <- row :: mat) array;
+           return ()
         | _ -> assert false
       ) mat
   in
@@ -337,7 +337,8 @@ let rec compile_matrix (occs : ns Var.t list) mat =
               let rec get_members j = function
                 | [] -> branch
                 | var :: vars ->
-                   Let_get_member(var, casted_reg, j, get_members (j + 1) vars)
+                   Let_get_member
+                     (var, occ, casted_reg, j, get_members (j + 1) vars)
               in
               ( i + 1
               , ( block_id
