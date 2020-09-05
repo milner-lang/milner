@@ -212,20 +212,17 @@ and transl_ty global ty_args ty : transl_ty =
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
-and transl_fun_ty global ty_args fun_ty
-    : (Llvm.lltype option list * Llvm.lltype) option =
-  let params =
-    List.map (transl_ty global ty_args) fun_ty.Type.dom |> erase_types
-  in
-  let ret =
-    match transl_ty global ty_args fun_ty.Type.codom with
-    | Uninhabited_ty -> None
-    | Zero_ty -> Some (Llvm.void_type global.llctx)
-    | Ll_ty ty -> Some ty
-  in
-  match params, ret with
-  | Some params, Some ret -> Some (params, ret)
-  | _, _ -> None
+and transl_fun_ty global ty_args fun_ty =
+  match List.map (transl_ty global ty_args) fun_ty.Type.dom |> erase_types with
+  | None -> None
+  | Some params ->
+     let ret =
+       match transl_ty global ty_args fun_ty.Type.codom with
+       (* The uninhabited type may still be inhabited by nonterminating
+          computations, so map it to the void type *)
+       | Uninhabited_ty | Zero_ty -> Llvm.void_type global.llctx
+       | Ll_ty ty -> ty
+     in Some (params, ret)
 
 let real_param_idx idx list =
   let rec loop i acc list =
@@ -305,17 +302,29 @@ and emit_expr global t = function
             Llvm.add_case sw idx bb) cases
      end
   | Ir.Continue(Block bb, args) ->
-     let bb = Hashtbl.find t.bbs bb in
-     Ir.VarMap.iter (fun k v ->
-         match transl_ty global t.ty_args (Var.ty k) with
-         | Uninhabited_ty -> failwith "Unreachable"
-         | Zero_ty -> ()
-         | Ll_ty _ ->
-            let phi = Vartbl.find t.llvals k in
-            let var = Vartbl.find t.llvals v in
-            Llvm.add_incoming (var, Llvm.insertion_block t.llbuilder) phi
-       ) args;
-     ignore (Llvm.build_br bb t.llbuilder)
+     let with_tys =
+       Ir.VarMap.fold (fun k v acc ->
+           match acc with
+           | None -> None
+           | Some ls ->
+              match transl_ty global t.ty_args (Var.ty k) with
+              | Uninhabited_ty -> None
+              | Zero_ty -> Some ((k, v, false) :: ls)
+              | Ll_ty _ -> Some ((k, v, true) :: ls))
+         args (Some [])
+     in
+     begin match with_tys with
+     | None -> ignore (Llvm.build_unreachable t.llbuilder);
+     | Some ls ->
+        let bb = Hashtbl.find t.bbs bb in
+        List.iter (fun (k, v, b) ->
+            if b then
+              let phi = Vartbl.find t.llvals k in
+              let var = Vartbl.find t.llvals v in
+              Llvm.add_incoming (var, Llvm.insertion_block t.llbuilder) phi
+          ) ls;
+        ignore (Llvm.build_br bb t.llbuilder)
+     end
   | Ir.If(test, Block then_, Block else_) ->
      begin match emit_aexp global t test with
      | None -> failwith "Unreachable: Test is erased"
@@ -461,24 +470,36 @@ and emit_expr global t = function
      let curr_bb = Llvm.insertion_block t.llbuilder in
      let bb = Llvm.append_block global.llctx (Int.to_string bbname) t.llfun in
      Llvm.position_at_end bb t.llbuilder;
-     List.iter (fun cont_param ->
-         match transl_ty global t.ty_args (Var.ty cont_param) with
-         | Uninhabited_ty -> ()
-         | Zero_ty -> ()
-         | Ll_ty llty ->
-            let phi =
-              Llvm.build_empty_phi (Llvm.pointer_type llty) "" t.llbuilder
-            in
-            Vartbl.add t.llvals cont_param phi
-       ) params;
-     Hashtbl.add t.bbs bbname bb;
-     Llvm.position_at_end curr_bb t.llbuilder;
-     (* Important: Must visit [next] FIRST because it may define registers used
-        in the continuation *)
-     emit_expr global t next;
-     Llvm.position_at_end bb t.llbuilder;
-     emit_expr global t cont;
-     Llvm.position_at_end curr_bb t.llbuilder
+     let with_tys =
+       List.fold_left (fun acc param ->
+           match acc with
+           | None -> None
+           | Some ls ->
+              match transl_ty global t.ty_args (Var.ty param) with
+              | Uninhabited_ty -> None
+              | Zero_ty -> Some ((param, None) :: ls)
+              | Ll_ty ty -> Some ((param, Some ty) :: ls))
+         (Some []) params
+     in
+     begin match with_tys with
+     | None -> ignore (Llvm.build_unreachable t.llbuilder)
+     | Some tys ->
+        List.iter (function
+            | (_, None) -> ()
+            | (param, Some llty) ->
+               let phi =
+                 Llvm.build_empty_phi (Llvm.pointer_type llty) "" t.llbuilder
+               in
+               Vartbl.add t.llvals param phi;
+          ) tys;
+        Hashtbl.add t.bbs bbname bb;
+        Llvm.position_at_end curr_bb t.llbuilder;
+        (* Important: Must visit [next] FIRST because it may define registers used
+           in the continuation *)
+        emit_expr global t next;
+        Llvm.position_at_end bb t.llbuilder;
+        emit_expr global t cont
+     end
   | Ir.Return aexp ->
      match emit_aexp global t aexp with
      | None -> ignore (Llvm.build_ret_void t.llbuilder)
