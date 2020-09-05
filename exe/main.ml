@@ -44,7 +44,7 @@ let reloc_model =
         | "pic" -> Ok Pic
         | "dynamic-no-pic" -> Ok Dynamic_no_pic
         | s -> Error (`Msg s)),
-       fun fmt s -> 
+       fun fmt s ->
        match s with
        | Static -> Format.pp_print_string fmt "static"
        | Pic -> Format.pp_print_string fmt "pic"
@@ -55,8 +55,23 @@ let reloc_model =
 let compile triple reloc_model emit_llvm codegen_filetype out_file = function
   | [] -> assert false
   | file :: _files ->
+     let mach, layout =
+       if triple = "wasm32-unknown-unknown" then
+         ( None
+         , Llvm_target.DataLayout.of_string "e-m:e-p:32:32-i64:64-n32:64-S128"
+         )
+       else (
+         Llvm_all_backends.initialize ();
+         let target = Target.by_triple triple in
+         let reloc_mode = match reloc_model with
+           | Static -> RelocMode.Static
+           | Pic -> RelocMode.PIC
+           | Dynamic_no_pic -> RelocMode.DynamicNoPIC
+         in
+         let mach = TargetMachine.create ~triple ~reloc_mode target in
+         Some mach, Llvm_target.TargetMachine.data_layout mach
+       ) in
      match
-       let ( let+ ) m f = Result.map f m in
        let ( let* ) = Result.bind in
        let* out_file = match out_file with
          | Some name -> Ok name
@@ -72,24 +87,22 @@ let compile triple reloc_model emit_llvm codegen_filetype out_file = function
                in Ok (base ^ s)
        in
        let* prog = Driver.read_file file in
-       let+ llmod = Driver.compile prog in
-       if emit_llvm then
-         match codegen_filetype with
+       let* llmod = Driver.compile layout prog in
+       Llvm.set_target_triple triple llmod;
+       if emit_llvm then (
+         begin match codegen_filetype with
          | CodeGenFileType.ObjectFile ->
             ignore (Llvm_bitwriter.write_bitcode_file llmod out_file)
          | CodeGenFileType.AssemblyFile ->
             Llvm.print_module out_file llmod
-       else (
-         Llvm_all_backends.initialize ();
-         let target = Target.by_triple triple in
-         let reloc_mode = match reloc_model with
-           | Static -> RelocMode.Static
-           | Pic -> RelocMode.PIC
-           | Dynamic_no_pic -> RelocMode.DynamicNoPIC
-         in
-         let mach = TargetMachine.create ~triple ~reloc_mode target in
-         TargetMachine.emit_to_file llmod codegen_filetype out_file mach
-       )
+         end;
+         Ok ()
+       ) else
+         match mach with
+         | Some mach ->
+            TargetMachine.emit_to_file llmod codegen_filetype out_file mach;
+            Ok ()
+         | None -> Error "Wasm target not supported."
      with
      | Ok () -> ()
      | Error e -> output_string stderr (e ^ "\n")

@@ -543,7 +543,7 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
         emit_expr global t fun_def.fun_body;
         Some llfun
 
-let emit_module llctx name prog =
+let emit_module datalayout llctx name prog =
   let llmod = Llvm.create_module llctx name in
   try
     let poly_funs = Hashtbl.create 33 in
@@ -558,7 +558,7 @@ let emit_module llctx name prog =
         prelude = { strcmp };
         types = Hashtbl.create 33;
         poly_funs;
-        layout = Llvm_target.DataLayout.of_string (Llvm.data_layout llmod)
+        layout = datalayout
       }
     in
     List.iter (function
@@ -578,6 +578,8 @@ let emit_module llctx name prog =
            if fun_def.Ir.fun_poly = 0 then
              ignore (emit_fun global [||] fun_def)
       ) prog.Ir.decls;
+    Llvm.set_data_layout
+      (Llvm_target.DataLayout.as_string global.layout) llmod;
     llmod
   with
   | e ->

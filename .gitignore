@@ -4,6 +4,9 @@ _build
 *.o
 *.s
 *.ll
+*.bc
+*.wasm
+*.wat
 
 *.aux
 *.log
