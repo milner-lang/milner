@@ -32,7 +32,7 @@ type cont = Block of int
 
 type expr =
   | Switch of Type.t * aexp * cont IntMap.t * cont option
-  | Continue of cont * ns Var.t VarMap.t
+  | Continue of cont * (ns Var.t * string) list
   | If of aexp * cont * cont
   | Let_aexp of ns Var.t * aexp * expr
   | Let_app of ns Var.t * aexp * aexp list * expr
@@ -45,7 +45,7 @@ type expr =
   | Let_eqint32 of int * aexp * aexp * expr
   | Let_gtint32 of int * aexp * aexp * expr
   | Let_strcmp of int * aexp * aexp * expr
-  | Let_cont of int * ns Var.t list * expr * expr
+  | Let_cont of int * (string * ns Var.t) list * expr * expr
   | Return of aexp
 
 type fun_def = {
@@ -145,15 +145,17 @@ let get_vars m s =
   | Error e, s -> Error e, s
   | Ok (a, l), s -> Ok ((a, l), l), s
 
-let refresh = function
-  | [] -> return None
-  | (var :: _) as vars ->
-     let* var' = fresh_phi (Var.ty var)
-     and* s = get_state in
-     let+ () =
-       iterM (fun var -> return (Vartbl.add s.var_map var var')) vars
-     in
-     Some var'
+let refresh var =
+  let+ var' = fresh (Var.ty var)
+  and+ s = get_state in
+  Vartbl.add s.var_map var var';
+  var'
+
+let refresh_phi var =
+  let+ var' = fresh_phi (Var.ty var)
+  and+ s = get_state in
+  Vartbl.add s.var_map var var';
+  var'
 
 let find_var var s =
   match Vartbl.find_opt s.var_map var with
@@ -163,277 +165,116 @@ let find_var var s =
 let fresh_block s =
   (Ok (s.block_gen, L.empty), { s with block_gen = s.block_gen + 1 })
 
-(** The following pattern matching compilation code uses the algorithm from
-    Maranget 2008:
-
-    Luc Maranget, Compiling Pattern Matching to Good Decision Trees
-    http://moscova.inria.fr/~maranget/papers/ml05e-maranget.pdf *)
-
-type row = {
-    pats : (ns Var.t option Typed.pat) list;
-    action : cont;
-    bindings : ns Var.t VarMap.t;
-  }
-
-type matrix = row list
-
-type refutability =
-  | Irrefutable of ns Var.t option list
-  | Constr_pat of ns Var.t option * int * Type.t * Type.adt
-  | Int_pat of ns Var.t option * int
-  | Str_pat of ns Var.t option * int
-
-let find_refutable_pat =
-  let rec loop idx wilds = function
-    | [] -> Irrefutable (List.rev wilds)
-    | Typed.{ pat_node = Constr_pat(ty, adt, _, _); pat_vars } :: _ ->
-       Constr_pat(pat_vars, idx, ty, adt)
-    | Typed.{ pat_node = Int_pat _; pat_vars } :: _ ->
-       Int_pat(pat_vars, idx)
-    | Typed.{ pat_node = Str_pat _; pat_vars } :: _ ->
-       Str_pat(pat_vars, idx)
-    | Typed.{ pat_node = Wild_pat; pat_vars } :: pats ->
-       loop (idx + 1) (pat_vars :: wilds) pats
-  in loop 0 []
-
-(** [split idx list] splits [list] at position [idx] if [idx] is in bounds,
-    returning [(ls, x, rs)] where [List.rev_append ls (x :: rs)] = [list]. *)
-let split idx =
-  let rec loop acc i = function
-    | [] -> assert false
-    | x :: xs ->
-       if i = idx then
-         (acc, x, xs)
+let rec compile_case_tree rhs = function
+  | Typed.Leaf(idx, params) ->
+     let action, _, _ = rhs.(idx) in
+     let+ params =
+       mapM (fun (var, name) ->
+           let+ var = find_var var in
+           (var, name)
+         ) params
+     in
+     Continue(Block action, params)
+  | Split(_, scrut, cases) ->
+     let* tag_reg = fresh_reg (* Register to store the tag *)
+     and* scrut = find_var scrut in
+     let+ _, blocks, jumptable =
+       List.fold_left (fun acc (vars, tree) ->
+           let* i, blocks, map = acc
+           and* vars = mapM refresh vars
+           and* casted_reg = fresh_reg in
+           let+ branch = compile_case_tree rhs tree
+           and+ block_id = fresh_block in
+           let rec get_members j = function
+             | [] -> branch
+             | var :: vars ->
+                Let_get_member
+                  (var, scrut, casted_reg, j, get_members (j + 1) vars)
+           in
+           ( i + 1
+           , ( block_id
+             , Let_select_tag(casted_reg, scrut, i, get_members 0 vars)
+             ) :: blocks
+           , IntMap.add i (Block block_id) map )
+         ) (return (0, [], IntMap.empty)) cases
+     in
+     let expr =
+       let ty = Type.Prim (Type.Num(Type.Unsigned, Type.Sz8)) in
+       Let_get_tag(
+           tag_reg, scrut,
+           Switch(ty, Reg tag_reg, jumptable, None))
+     in
+     List.fold_right (fun (block_id, branch) expr ->
+         Let_cont(block_id, [], branch, expr)
+       ) blocks expr
+  | Split_int(scrut, cases, otherwise) ->
+     let+ scrut = find_var scrut
+     and+ blocks, jumptable =
+       IntMap.fold (fun n tree acc ->
+           let* blocks, map = acc in
+           let+ branch = compile_case_tree rhs tree
+           and+ block_id = fresh_block in
+           ((block_id, branch) :: blocks, IntMap.add n (Block block_id) map)
+         ) cases (return ([], IntMap.empty))
+     and+ default_id = fresh_block
+     and+ default = compile_case_tree rhs otherwise in
+     let ty = Type.Prim (Type.Num(Type.Unsigned, Type.Sz32)) in
+     let expr =
+       Let_cont(default_id, [], default,
+                Switch(ty, Var scrut, jumptable, Some (Block default_id)))
+     in
+     List.fold_right (fun (block_id, branch) expr ->
+         Let_cont(block_id, [], branch, expr)
+       ) blocks expr
+  | Split_str(scrut, cases, otherwise) ->
+     let* scrut = find_var scrut in
+     (* When pattern matching on a string, use a binary search *)
+     let rec make_binary_search default array lo hi =
+       if lo = hi then
+         return default
        else
-         loop (x :: acc) (i + 1) xs
-  in loop [] 0
-
-let specialize array adt idx occs pat_var mat =
-  let loccs, occ, roccs = split idx occs in
-  let occs = List.rev_append loccs roccs in
-  let+ () =
-    iterM (fun row ->
-        let lpats, pat, rpats = split idx row.pats in
-        match pat.Typed.pat_node with
-        | Typed.Constr_pat(_, _, n, pats) ->
-           let row =
-             { row with
-               pats = List.append pats (List.rev_append lpats rpats)
-             ; bindings =
-                 match pat_var with
-                 | None -> row.bindings
-                 | Some v -> VarMap.add v occ row.bindings
-             } in
-           array.(n) <- row :: array.(n);
-           return ()
-        | Typed.Wild_pat ->
-           Array.iteri (fun n mat ->
-               let _, members = adt.Type.adt_constrs.(n) in
-               let wilds =
-                 List.init (List.length members)
-                   (Fun.const
-                      { Typed.pat_node = Typed.Wild_pat
-                      ; pat_vars = None })
-               in
-               let row =
-                 { row with
-                   pats = List.rev_append wilds (List.rev_append lpats rpats)
-                 ; bindings =
-                     match pat_var with
-                     | None -> row.bindings
-                     | Some v -> VarMap.add v occ row.bindings
-                 } in
-               array.(n) <- row :: mat) array;
-           return ()
-        | _ -> assert false
-      ) mat
-  in
-  for i = 0 to Array.length array - 1 do
-    array.(i) <- List.rev array.(i)
-  done;
-  (occ, occs)
-
-let specialize_int idx occs pat_var mat =
-  let loccs, occ, roccs = split idx occs in
-  let occs = List.rev_append loccs roccs in
-  let+ map, otherwise =
-    fold_leftM (fun (map, otherwise) row ->
-        let lpats, pat, rpats = split idx row.pats in
-        match pat.Typed.pat_node with
-        | Typed.Int_pat(_, n) ->
-           let row =
-             { row with
-               pats = List.rev_append lpats rpats
-             ; bindings =
-                 match pat_var with
-                 | None -> row.bindings
-                 | Some v -> VarMap.add v occ row.bindings
-             } in
-           begin match IntMap.find_opt n map with
-           | None -> return (IntMap.add n [row] map, otherwise)
-           | Some rows -> return (IntMap.add n (row :: rows) map, otherwise)
-           end
-        | Typed.Wild_pat -> return (map, row :: otherwise)
-        | _ -> assert false
-      ) (IntMap.empty, []) mat
-  in (occ, occs, IntMap.map List.rev map, List.rev otherwise)
-
-let specialize_str idx occs pat_var mat =
-  let loccs, occ, roccs = split idx occs in
-  let occs = List.rev_append loccs roccs in
-  let+ map, otherwise =
-    fold_leftM (fun (map, otherwise) row ->
-        let lpats, pat, rpats = split idx row.pats in
-        match pat.Typed.pat_node with
-        | Typed.Str_pat s ->
-           let row =
-             { row with
-               pats = List.rev_append lpats rpats
-             ; bindings =
-                 match pat_var with
-                 | None -> row.bindings
-                 | Some v -> VarMap.add v occ row.bindings
-             } in
-           begin match StrMap.find_opt s map with
-           | None -> return (StrMap.add s [row] map, otherwise)
-           | Some rows -> return (StrMap.add s (row :: rows) map, otherwise)
-           end
-        | Typed.Wild_pat -> return (map, row :: otherwise)
-        | _ -> assert false
-      ) (StrMap.empty, []) mat
-  in (occ, occs, StrMap.map List.rev map, List.rev otherwise)
-
-let compile_irrefutable row occs wilds =
-  let rec loop bindings = function
-    | [], [] -> bindings
-    | occ :: occs, Some var :: wilds ->
-       loop (VarMap.add var occ bindings) (occs, wilds)
-    | _ :: occs, None :: wilds -> loop bindings (occs, wilds)
-    | _ :: _, [] -> assert false
-    | [], _ :: _ -> assert false
-  in Continue(row.action, loop row.bindings (occs, wilds))
-
-let rec compile_matrix (occs : ns Var.t list) mat =
-  match mat with
-  | [] -> throw "Incomplete pattern match"
-  | row :: _ ->
-     match find_refutable_pat row.pats with
-     | Irrefutable wilds -> return (compile_irrefutable row occs wilds)
-
-     | Constr_pat(pat_var, idx, _ty, adt) ->
-        let array = Array.make (Array.length adt.Type.adt_constrs) [] in
-        let* occ, occs' = specialize array adt idx occs pat_var mat in
-        let+ tag_reg = fresh_reg (* Register to store the tag *)
-        and+ _, blocks, jumptable =
-          Array.fold_left (fun acc mat ->
-              let* i, blocks, map = acc in
-              let _, tys = adt.Type.adt_constrs.(i) in
-              let* casted_reg = fresh_reg in
-              let* vars = mapM fresh tys in
-              (* Push inner terms of data constructor onto [occ'] *)
-              let occs' = List.append vars occs' in
-              let+ branch = compile_matrix occs' mat
-              and+ block_id = fresh_block in
-              let rec get_members j = function
-                | [] -> branch
-                | var :: vars ->
-                   Let_get_member
-                     (var, occ, casted_reg, j, get_members (j + 1) vars)
-              in
-              ( i + 1
-              , ( block_id
-                , Let_select_tag(casted_reg, occ, i, get_members 0 vars)
-                ) :: blocks
-              , IntMap.add i (Block block_id) map )
-            ) (return (0, [], IntMap.empty)) array
-        in
-        let expr =
-          let ty =
-            UnionFind.wrap (Type.Prim (Type.Num(Type.Unsigned, Type.Sz8)))
-          in
-          Let_get_tag(
-              tag_reg, occ,
-              Switch(ty, Reg tag_reg, jumptable, None))
-        in
-        List.fold_right (fun (block_id, branch) expr ->
-            Let_cont(block_id, [], branch, expr)
-          ) blocks expr
-
-     | Int_pat(pat_var, idx) ->
-        let* occ, occs', map, otherwise =
-          specialize_int idx occs pat_var mat
-        in
-        let+ blocks, jumptable =
-          IntMap.fold (fun n mat acc ->
-              let+ blocks, map = acc
-              and+ branch = compile_matrix occs' mat
-              and+ block_id = fresh_block in
-              ((block_id, branch) :: blocks, IntMap.add n (Block block_id) map)
-            ) map (return ([], IntMap.empty))
-        and+ default_id = fresh_block
-        and+ default = compile_matrix occs otherwise in
-        let ty =
-          UnionFind.wrap (Type.Prim (Type.Num(Type.Unsigned, Type.Sz32)))
-        in
-        let expr =
-          Let_cont(default_id, [], default,
-                   Switch(ty, Var occ, jumptable, Some (Block default_id)))
-        in
-        List.fold_right (fun (block_id, branch) expr ->
-            Let_cont(block_id, [], branch, expr)
-          ) blocks expr
-
-     | Str_pat(pat_var, idx) ->
-        (* When pattern matching on a string, use a binary search *)
-        let rec make_binary_search occ default array lo hi =
-          if lo = hi then
-            return default
-          else
-            let pivot = lo + (hi - lo) / 2 in
-            let test_str, cont = array.(pivot) in
-            let+ strtest_result = fresh_reg
-            and+ eq_result = fresh_reg
-            and+ gt_result = fresh_reg
-            and+ left_id = fresh_block
-            and+ right_id = fresh_block
-            and+ gt_id = fresh_block
-            and+ left = make_binary_search occ default array lo pivot
-            and+ right = make_binary_search occ default array (pivot + 1) hi in
-            Let_cont(
-                left_id, [], left,
-                Let_cont(
-                    right_id, [], right,
-                    Let_cont(
-                        gt_id, [],
-                        Let_gtint32(
-                            gt_result, Reg strtest_result, Int32 0,
-                            If(Reg gt_result, Block right_id, Block left_id)),
-                        Let_strcmp(
-                            strtest_result, Var occ, String test_str,
-                            Let_eqint32(
+         let pivot = lo + (hi - lo) / 2 in
+         let test_str, cont = array.(pivot) in
+         let+ strtest_result = fresh_reg
+         and+ eq_result = fresh_reg
+         and+ gt_result = fresh_reg
+         and+ left_id = fresh_block
+         and+ right_id = fresh_block
+         and+ gt_id = fresh_block
+         and+ left = make_binary_search default array lo pivot
+         and+ right = make_binary_search default array (pivot + 1) hi in
+         Let_cont(
+             left_id, [], left,
+             Let_cont(
+                 right_id, [], right,
+                 Let_cont(
+                     gt_id, [],
+                     Let_gtint32(
+                         gt_result, Reg strtest_result, Int32 0,
+                         If(Reg gt_result, Block right_id, Block left_id)),
+                     Let_strcmp(
+                         strtest_result, Var scrut, String test_str,
+                         Let_eqint32(
                                 eq_result, Reg strtest_result, Int32 0,
                                 If(Reg eq_result, cont, Block gt_id))))))
-        in
-        let* occ, occs', map, otherwise =
-          specialize_str idx occs pat_var mat
-        in
-        let* blocks, jumptable =
-          StrMap.fold (fun n mat acc ->
-              let+ blocks, map = acc
-              and+ branch = compile_matrix occs' mat
-              and+ block_id = fresh_block in
-              ((block_id, branch) :: blocks, StrMap.add n (Block block_id) map)
-            ) map (return ([], StrMap.empty))
-        and* default_id = fresh_block
-        and* default = compile_matrix occs otherwise in
-        let array = Array.of_list (StrMap.bindings jumptable) in
-        let+ search =
-          make_binary_search occ (Continue(Block default_id, VarMap.empty))
-            array 0 (Array.length array)
-        in
-        List.fold_right (fun (block_id, branch) expr ->
-            Let_cont(block_id, [], branch, expr)
-          ) blocks (Let_cont(default_id, [], default, search))
+     in
+     let* blocks, jumptable =
+       StrMap.fold (fun str tree acc ->
+           let* blocks, map = acc in
+           let+ branch = compile_case_tree rhs tree
+           and+ block_id = fresh_block in
+           ((block_id, branch) :: blocks, StrMap.add str (Block block_id) map)
+         ) cases (return ([], StrMap.empty))
+     and* default_id = fresh_block
+     and* default = compile_case_tree rhs otherwise in
+     let array = Array.of_list (StrMap.bindings jumptable) in
+     let+ search =
+       make_binary_search (Continue(Block default_id, []))
+         array 0 (Array.length array)
+     in
+     List.fold_right (fun (block_id, branch) expr ->
+         Let_cont(block_id, [], branch, expr)
+       ) blocks (Let_cont(default_id, [], default, search))
 
 let rec compile_expr exp k =
   match exp with
@@ -465,55 +306,26 @@ let rec compile_expr exp k =
      let* var = find_var var in
      k (Var var)
 
-let rec refresh_pat pat =
-  let+ pat_vars = refresh pat.Typed.pat_vars
-  and+ pat_node = match pat.Typed.pat_node with
-    | Typed.Constr_pat(a, b, c, pats) ->
-       let+ pats = mapM refresh_pat pats in
-       Typed.Constr_pat(a, b, c, pats)
-    | Typed.Int_pat(a, b) -> return (Typed.Int_pat(a, b))
-    | Typed.Str_pat a -> return (Typed.Str_pat a)
-    | Typed.Wild_pat -> return Typed.Wild_pat
-  in { Typed.pat_vars; pat_node }
-
-let rec get_pat_vars acc pat =
-  let vars = match pat.Typed.pat_vars with
-    | None -> acc
-    | Some v -> v :: acc
-  in
-  match pat.Typed.pat_node with
-  | Typed.Constr_pat(_, _, _, pats) -> List.fold_left get_pat_vars vars pats
-  | _ -> vars
-
 let compile_fun fun_def =
-  let Type.Forall(type_arity, ty) = fun_def.Typed.fun_ty in
-  let arity = match UnionFind.find ty with
-    | UnionFind.Value (Type.Fun fun_ty) -> fun_ty
-    | _ -> assert false
-  in
-  let n = List.length arity.Type.dom in
+  let n = List.length fun_def.Typed.fun_ty.dom in
   let compile_body =
     (* Everything needs to be inside the action [compile_body] so that
        all generated variables can be collected by [get_vars] *)
-    let* params = mapM fresh arity.Type.dom in
-    let rec create_matrix mat exprs = function
-      | [] -> return (List.rev mat, List.rev exprs)
-      | clause :: clauses ->
-         let* cont_id = fresh_block
-         and* pats = mapM refresh_pat clause.Typed.clause_lhs in
-         let cont_params = List.fold_left get_pat_vars [] pats in
-         create_matrix
-           ({ pats; action = Block cont_id; bindings = VarMap.empty } :: mat)
-           ((cont_id, cont_params, clause.Typed.clause_rhs) :: exprs)
-           clauses
+    let* params = mapM refresh fun_def.Typed.fun_params in
+    let* exprs =
+      mapM (fun (cont_params, expr) ->
+          let+ cont_id = fresh_block
+          and+ cont_params =
+            StrMap.fold (fun string var acc ->
+                let+ ls = acc
+                and+ var = refresh_phi var in
+                (string, var) :: ls
+              ) cont_params (return [])
+          and+ expr = compile_expr expr (fun x -> return (Return x)) in
+          cont_id, cont_params, expr) fun_def.Typed.fun_clauses
     in
-    let* mat, exprs = create_matrix [] [] fun_def.Typed.fun_clauses in
-    let* entry = compile_matrix params mat in
-    let+ exprs =
-      mapM (fun (cont_id, cont_params, expr) ->
-          let+ expr = compile_expr expr (fun x -> return (Return x))
-          in cont_id, cont_params, expr) exprs
-    in
+    let block_mapping = Array.of_list exprs in
+    let+ entry = compile_case_tree block_mapping fun_def.Typed.fun_tree in
     let expr =
       List.fold_right (fun (cont_id, cont_params, expr) next ->
           Let_cont(cont_id, cont_params, expr, next)
@@ -526,9 +338,9 @@ let compile_fun fun_def =
     in body
   in
   let+ (body, vars) = get_vars compile_body in
-  { fun_name = fun_def.fun_name;
-    fun_ty = arity;
-    fun_poly = type_arity;
+  { fun_name = fun_def.Typed.fun_name;
+    fun_ty = fun_def.Typed.fun_ty;
+    fun_poly = fun_def.fun_typarams;
     fun_vars = L.to_list vars;
     fun_body = body }
 

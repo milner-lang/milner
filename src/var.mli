@@ -7,6 +7,8 @@ val add_name : _ t -> string -> unit
 
 val compare : 'ns t -> 'ns t -> int
 
+val equal : 'ns t -> 'ns t -> bool
+
 val hash : _ t -> int
 
 val to_string : _ t -> string

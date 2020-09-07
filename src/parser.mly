@@ -5,9 +5,12 @@
 %token BAR
 %token COLON
 %token COMMA
+%token DOT
 %token EQUALS
 %token LPAREN
 %token RPAREN
+%token LANGLE
+%token RANGLE
 %token SEMICOLON
 %token UNDERSCORE
 %token AS
@@ -251,6 +254,13 @@ let atom_expr :=
         annot_end = $endpos;
       }
     }
+  | id = LIDENT; DOT; LANGLE; args = separated_list(COMMA, ty); RANGLE; {
+        Ast.{
+          annot_item = Generic_expr(id, args);
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
   | id = LIDENT; {
       Ast.{
         annot_item = Var_expr id;

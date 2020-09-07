@@ -1,4 +1,4 @@
-type 'a solver = ('a, string) result
+(*type 'a solver = ('a, string) result
 
 module Mon : Monad.MONAD with type 'a t = 'a solver = struct
   type 'a t = 'a solver
@@ -36,3 +36,4 @@ let rec solve_many = function
   | c :: cs ->
      let* () = solve_constraints c in
      solve_many cs
+*)

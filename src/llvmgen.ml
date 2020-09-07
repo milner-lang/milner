@@ -51,6 +51,7 @@ type t = {
     regs : (int, Llvm.llvalue) Hashtbl.t;
     real_params : Llvm.lltype option list;
     ty_args : Type.t array;
+    phis : (string, Llvm.llvalue) Hashtbl.t;
   }
 
 type translated_constr =
@@ -79,11 +80,11 @@ let rec erase_types = function
      Option.map (fun tys -> Some llty :: tys) (erase_types tys)
 
 let rec mangle_ty global type_args ty =
-  match UnionFind.find ty with
-  | UnionFind.Value (Type.Constr adt) ->
+  match ty with
+  | Type.Constr adt ->
      ignore (compile_datatype global adt);
      adt.Type.adt_name
-  | UnionFind.Value (Type.Prim prim) ->
+  | Type.Prim prim ->
      (* Ints and nats share the same machine representation, so instantiations
         for ints and nats can share the same code *)
      begin match prim with
@@ -94,10 +95,11 @@ let rec mangle_ty global type_args ty =
      | Type.Num(_, Type.Sz64) -> "int64"
      | Type.Unit -> "unit"
      end
-  | UnionFind.Value (Type.Fun _fun_ty) -> ""
-  | UnionFind.Value (Type.Pointer _) -> "pointer"
-  | UnionFind.Value (Type.Rigid v) -> mangle_ty global type_args type_args.(v)
-  | UnionFind.Root _ -> failwith "Unsolved type"
+  | Type.Fun _fun_ty -> ""
+  | Type.Pointer _ -> "pointer"
+  | Type.Rigid v -> mangle_ty global type_args type_args.(v)
+  | Type.Var _ -> failwith "Unsolved type variable !?"
+  | Type.Univ -> "univ"
 
 and compile_datatype global adt =
   let rec classify_datatype idx = function
@@ -183,8 +185,8 @@ and transl_size llctx = function
 (** The unit type does not translate into a machine type. *)
 and transl_ty global ty_args ty : transl_ty =
   let llctx = global.llctx in
-  match UnionFind.find ty with
-  | UnionFind.Value (Type.Constr _adt) ->
+  match ty with
+  | Type.Constr _adt ->
      let mangled = mangle_ty global [||] ty in
      begin match Hashtbl.find global.types mangled with
      | Uninhabited -> Uninhabited_ty
@@ -192,23 +194,24 @@ and transl_ty global ty_args ty : transl_ty =
      | Product(_, ty) -> Ll_ty ty
      | Basic_sum(ty, _) -> Ll_ty ty
      end
-  | UnionFind.Value (Type.Prim prim) ->
+  | Type.Prim prim ->
      begin match prim with
      | Type.Cstr -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
      | Type.Num(_, sz) -> Ll_ty (transl_size llctx sz)
      | Type.Unit -> Zero_ty
      end
-  | UnionFind.Value (Type.Fun fun_ty) ->
+  | Type.Fun fun_ty ->
      begin match transl_fun_ty global ty_args fun_ty with
      | None -> Uninhabited_ty
      | Some (params, ret) ->
         let params = params |> remove_nones |> Array.of_list in
         Ll_ty (Llvm.function_type ret params)
      end
-  | UnionFind.Value (Type.Pointer _) ->
+  | Type.Pointer _ ->
      Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
-  | UnionFind.Value (Type.Rigid v) -> transl_ty global ty_args ty_args.(v)
-  | UnionFind.Root _ -> failwith "Unsolved type"
+  | Type.Rigid v -> transl_ty global ty_args ty_args.(v)
+  | Type.Var _ -> failwith "Unsolved type variable!?"
+  | Type.Univ -> Zero_ty
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
@@ -275,8 +278,8 @@ and emit_cmp kind global t dest lhs rhs =
 
 and emit_expr global t = function
   | Ir.Switch(ty, scrut, cases, default) ->
-     let size = match UnionFind.find ty with
-       | UnionFind.Value (Type.Prim (Type.Num(_, sz))) -> sz
+     let size = match ty with
+       | Type.Prim (Type.Num(_, sz)) -> sz
        | _ -> failwith "Unreachable: Not an int"
      in
      let default = match default with
@@ -303,24 +306,24 @@ and emit_expr global t = function
      end
   | Ir.Continue(Block bb, args) ->
      let with_tys =
-       Ir.VarMap.fold (fun k v acc ->
+       List.fold_left (fun acc (var, name) ->
            match acc with
            | None -> None
            | Some ls ->
-              match transl_ty global t.ty_args (Var.ty k) with
+              match transl_ty global t.ty_args (Var.ty var) with
               | Uninhabited_ty -> None
-              | Zero_ty -> Some ((k, v, false) :: ls)
-              | Ll_ty _ -> Some ((k, v, true) :: ls))
-         args (Some [])
+              | Zero_ty -> Some ((var, name, false) :: ls)
+              | Ll_ty _ -> Some ((var, name, true) :: ls))
+         (Some []) args
      in
      begin match with_tys with
      | None -> ignore (Llvm.build_unreachable t.llbuilder);
      | Some ls ->
         let bb = Hashtbl.find t.bbs bb in
-        List.iter (fun (k, v, b) ->
+        List.iter (fun (var, name, b) ->
             if b then
-              let phi = Vartbl.find t.llvals k in
-              let var = Vartbl.find t.llvals v in
+              let phi = Hashtbl.find t.phis name in
+              let var = Vartbl.find t.llvals var in
               Llvm.add_incoming (var, Llvm.insertion_block t.llbuilder) phi
           ) ls;
         ignore (Llvm.build_br bb t.llbuilder)
@@ -471,26 +474,27 @@ and emit_expr global t = function
      let bb = Llvm.append_block global.llctx (Int.to_string bbname) t.llfun in
      Llvm.position_at_end bb t.llbuilder;
      let with_tys =
-       List.fold_left (fun acc param ->
+       List.fold_left (fun acc (name, var) ->
            match acc with
            | None -> None
            | Some ls ->
-              match transl_ty global t.ty_args (Var.ty param) with
+              match transl_ty global t.ty_args (Var.ty var) with
               | Uninhabited_ty -> None
-              | Zero_ty -> Some ((param, None) :: ls)
-              | Ll_ty ty -> Some ((param, Some ty) :: ls))
+              | Zero_ty -> Some ((name, var, None) :: ls)
+              | Ll_ty ty -> Some ((name, var, Some ty) :: ls))
          (Some []) params
      in
      begin match with_tys with
      | None -> ignore (Llvm.build_unreachable t.llbuilder)
      | Some tys ->
         List.iter (function
-            | (_, None) -> ()
-            | (param, Some llty) ->
+            | (_, _, None) -> ()
+            | (name, var, Some llty) ->
                let phi =
                  Llvm.build_empty_phi (Llvm.pointer_type llty) "" t.llbuilder
                in
-               Vartbl.add t.llvals param phi;
+               Hashtbl.add t.phis name phi;
+               Vartbl.add t.llvals var phi;
           ) tys;
         Hashtbl.add t.bbs bbname bb;
         Llvm.position_at_end curr_bb t.llbuilder;
@@ -529,6 +533,7 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
             regs = Hashtbl.create 10;
             real_params;
             ty_args;
+            phis = Hashtbl.create 21;
           }
         in
         (* Allocate stack space for all local variables *)

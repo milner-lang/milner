@@ -11,6 +11,8 @@ let add_name t name =
 
 let compare lhs rhs = compare lhs.id rhs.id
 
+let equal lhs rhs = compare lhs rhs = 0
+
 let hash t = t.id
 
 let to_string t =

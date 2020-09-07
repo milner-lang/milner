@@ -25,9 +25,12 @@ let rec tokenize lexbuf = match%sedlex lexbuf with
   | '|' -> BAR
   | ':' -> COLON
   | ',' -> COMMA
+  | '.' -> DOT
   | '=' -> EQUALS
   | '(' -> LPAREN
   | ')' -> RPAREN
+  | '<' -> LANGLE
+  | '>' -> RANGLE
   | ';' -> SEMICOLON
   | '_' -> UNDERSCORE
   | '"' -> string (Buffer.create 17) lexbuf

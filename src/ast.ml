@@ -9,6 +9,7 @@ type ty =
   | Ty_con of string
   | Ty_var of string
   | Unit
+  | Univ
 
 type adt = {
     adt_name : string;
@@ -35,6 +36,7 @@ type expr =
   | Lit_expr of literal
   | Seq_expr of expr annot * expr annot
   | Var_expr of string
+  | Generic_expr of string * ty annot list
 
 type clause = {
     clause_lhs : pat annot list;

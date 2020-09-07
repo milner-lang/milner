@@ -105,7 +105,9 @@ let compile triple reloc_model emit_llvm codegen_filetype out_file = function
          | None -> Error "Wasm target not supported."
      with
      | Ok () -> ()
-     | Error e -> output_string stderr (e ^ "\n")
+     | Error e ->
+        output_string stderr (e ^ "\n");
+        exit 2
 
 let cmd =
   let ( let+ ) tm f = Term.(const f $ tm) in
@@ -120,4 +122,5 @@ let cmd =
   , Term.info "milner" )
 
 let () =
+  Printexc.record_backtrace true;
   Term.exit @@ Term.eval cmd

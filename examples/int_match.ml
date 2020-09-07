@@ -4,6 +4,7 @@ val cases : fun(Int32) -> Cstring
 fun cases(0i32) = "Hello world!"
   | (_) = "Goodbye world!"
 
+val str_cases : fun(Cstring) -> Cstring
 fun str_cases("") = "Empty"
   | ("Foo") = "Foofoorian"
   | ("Bar") = "Barbarian"

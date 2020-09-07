@@ -1,33 +1,41 @@
 module L = Dlist
+module IntMap = Map.Make(Int)
 module StringMap = Map.Make(String)
 module Symtable = ScopedMap.Make(String)
 
 type error =
+  | Incomplete_match
+  | Not_enough_arguments
+  | Not_enough_patterns
   | Redefined of string
+  | Too_many_arguments
+  | Too_many_patterns
   | Undefined of string
   | Undefined_tvar of string
-  | Unification
   | Unimplemented of string
 
 let string_of_error = function
-  | Redefined s -> "Elab: Redefined " ^ s
-  | Undefined s -> "Elab: Undefined " ^ s
-  | Undefined_tvar s -> "Elab: Undefined type variable " ^ s
-  | Unification -> "Elab: Unification"
-  | Unimplemented s -> "Elab: Unimplemented " ^ s
+  | Incomplete_match -> "Incomplete match"
+  | Not_enough_arguments -> "Not enough arguments"
+  | Not_enough_patterns -> "Not enough patterns"
+  | Redefined s -> "Redefined " ^ s
+  | Too_many_arguments -> "Too manu arguments"
+  | Too_many_patterns -> "Too many patterns"
+  | Undefined s -> "Undefined " ^ s
+  | Undefined_tvar s -> "Undefined type variable " ^ s
+  | Unimplemented s -> "Unimplemented " ^ s
 
 type state = {
     tycons : (string, Type.t) Hashtbl.t;
     datacons : (string, Type.adt * int) Hashtbl.t;
     funcs : (string, Type.forall) Hashtbl.t;
-    ty_gen : UnionFind.gen;
+    metavar_gen : int;
     var_gen : Typed.ns Var.gen;
   }
 
 type 'a payload = {
     data : 'a;
     ex : Type.t L.t; (** Existential variables *)
-    c : Type.constraints L.t; (** Constraints *)
   }
 
 (* In the paper "Hindley-Milner Elaboration in Applicative Style," the wrapped
@@ -42,11 +50,10 @@ let throw e _ s = (Error e, s)
 
 let init_state () =
   let tycons = Hashtbl.create 20 in
-  Hashtbl.add tycons "Cstring" (UnionFind.wrap (Type.Prim Type.Cstr));
-  Hashtbl.add tycons "Int32"
-    (UnionFind.wrap (Type.Prim (Type.Num(Type.Signed, Type.Sz32))));
-  { ty_gen = UnionFind.init_gen;
-    var_gen = Var.init_gen;
+  Hashtbl.add tycons "Cstring" (Type.Prim Type.Cstr);
+  Hashtbl.add tycons "Int32" (Type.Prim (Type.Num(Type.Signed, Type.Sz32)));
+  { var_gen = Var.init_gen;
+    metavar_gen = 0;
     datacons = Hashtbl.create 20;
     funcs = Hashtbl.create 20;
     tycons }
@@ -60,7 +67,7 @@ let run m =
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
 
-  let return a _env s = (Ok { data = a; ex = L.empty; c = L.empty }, s)
+  let return a _env s = (Ok { data = a; ex = L.empty }, s)
 
   let ( let+ ) t f env s =
     let r, s = t env s in
@@ -80,7 +87,6 @@ module Mon : Monad.MONAD with type 'a t = 'a t = struct
           ( Ok {
                 data = (w1.data, w2.data);
                 ex = L.append w1.ex w2.ex;
-                c = L.append w1.c w2.c;
               }
           , s )
 
@@ -98,7 +104,6 @@ module Mon : Monad.MONAD with type 'a t = 'a t = struct
           ( Ok {
                 data = w2.data;
                 ex = L.append w1.ex w2.ex;
-                c = L.append w1.c w2.c;
               }
           , s )
 end
@@ -106,22 +111,11 @@ end
 open Mon
 open Monad.List(Mon)
 
-let constrain c _ s =
-  (Ok { data = (); ex = L.empty; c = L.singleton c }, s)
-
 let in_scope scope m env s =
   let (r, s) = m (Symtable.extend scope env) s in
   match r with
   | Error e -> (Error e, s)
   | Ok w -> (Ok w, s)
-
-let poly m env s =
-  let (r, s) = m env s in
-  match r with
-  | Error e -> (Error e, s)
-  | Ok w ->
-     let data = (w.data, L.to_list w.ex, L.to_list w.c) in
-     (Ok { data; ex = L.empty; c = L.empty }, s)
 
 type var_kind =
   | Local of Typed.ns Var.t
@@ -129,59 +123,50 @@ type var_kind =
 
 let find name env s =
   match Symtable.find name env with
-  | Some var -> (Ok { data = Local var; ex = L.empty; c = L.empty }, s)
+  | Some var -> (Ok { data = Local var; ex = L.empty }, s)
   | None ->
      match Hashtbl.find_opt s.funcs name with
-     | Some ty -> (Ok { data = Global ty; ex = L.empty; c = L.empty }, s)
+     | Some ty -> (Ok { data = Global ty; ex = L.empty }, s)
      | None -> (Error (Undefined name), s)
 
 let declare_ty name ty _ s =
   Hashtbl.add s.tycons name ty;
-  (Ok { data = (); ex = L.empty; c = L.empty }, s)
+  (Ok { data = (); ex = L.empty }, s)
 
 let find_tcon name _ s =
   match Hashtbl.find_opt s.tycons name with
   | None -> (Error (Undefined name), s)
-  | Some ty -> (Ok { data = ty; ex = L.empty; c = L.empty }, s)
-
-let fresh_tvar _ s =
-  let (ty, ty_gen) = UnionFind.fresh s.ty_gen in
-  (Ok { data = ty; ex = L.singleton ty; c = L.empty }, { s with ty_gen })
-
-let create_ty ty _ s =
-  let ty = UnionFind.wrap ty in
-  (Ok { data = ty; ex = L.singleton ty; c = L.empty }, s)
+  | Some ty -> (Ok { data = ty; ex = L.empty }, s)
 
 let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
-  (Ok { data = var; ex = L.empty; c = L.empty }, { s with var_gen })
-
+  (Ok { data = var; ex = L.empty }, { s with var_gen })
 
 let declare_datacon name idx adt _ s =
   Hashtbl.add s.datacons name (idx, adt);
-  (Ok { data = (); ex = L.empty; c = L.empty }, s)
+  (Ok { data = (); ex = L.empty }, s)
 
 let find_datacon name _ s =
   match Hashtbl.find_opt s.datacons name with
-  | Some data -> (Ok { data; ex = L.empty; c = L.empty }, s)
+  | Some data -> (Ok { data; ex = L.empty }, s)
   | None -> Error (Undefined name), s
 
 let rec read_ty tvars = function
-  | Ast.Unit -> create_ty (Type.Prim Type.Unit)
+  | Ast.Unit -> return (Type.Prim Type.Unit)
+  | Ast.Univ -> return Type.Univ
   | Ast.Ty_con tycon -> find_tcon tycon
   | Ast.Arrow(dom, codom) ->
-     let* dom = mapM (fun x -> read_ty tvars x.Ast.annot_item) dom in
-     let* codom = read_ty tvars codom.Ast.annot_item in
-     create_ty (Type.Fun { dom; codom })
+     let+ dom = mapM (fun x -> read_ty tvars x.Ast.annot_item) dom
+     and+ codom = read_ty tvars codom.Ast.annot_item in
+     Type.Fun { dom; codom }
   | Ast.Ty_var name ->
      match StringMap.find_opt name tvars with
-     | Some v -> create_ty (Type.Rigid v)
+     | Some v -> return (Type.Rigid v)
      | None -> throw (Undefined_tvar name)
 
 let read_ty_scheme tvars ty =
   let len, tvar_map =
-    List.fold_left
-      (fun (i, tvars) next -> i + 1, StringMap.add next i tvars)
+    List.fold_left (fun (i, tvars) next -> i + 1, StringMap.add next i tvars)
       (0, StringMap.empty) tvars
   in
   let+ ty = read_ty tvar_map ty in
@@ -204,180 +189,378 @@ let read_adt adt =
         let+ () = declare_datacon name adt' i in
         i + 1)
       0 adt.Ast.adt_constrs in
-  let+ () = declare_ty adt.Ast.adt_name (UnionFind.wrap (Type.Constr adt')) in
+  let+ () = declare_ty adt.Ast.adt_name (Type.Constr adt') in
   adt'
-
-let inst n ty _ s =
-  let ty_args, ty, ty_gen = Type.inst s.ty_gen n ty in
-  (Ok { data = (ty_args, ty); ex = L.empty; c = L.empty }, { s with ty_gen })
 
 let decl_fun name ty _ s =
   if Hashtbl.mem s.funcs name then
     (Error (Redefined name), s)
   else (
     Hashtbl.add s.funcs name ty;
-    (Ok { data = (); ex = L.empty; c = L.empty }, s)
+    (Ok { data = (); ex = L.empty }, s)
   )
 
 let get_fun name _ s =
-  (Ok { data = Hashtbl.find_opt s.funcs name; ex = L.empty; c = L.empty }, s)
-
-let lit_has_ty lit ty =
-  match lit with
-  | Ast.Int_lit _ -> constrain (Type.Nat ty)
-  | Ast.Int32_lit _ ->
-     let* int32 = create_ty (Type.Prim (Type.Num(Type.Signed, Type.Sz32))) in
-     constrain (Type.Eq(ty, int32))
-  | Ast.Str_lit _ ->
-     let* cstr = create_ty (Type.Prim Type.Cstr) in
-     constrain (Type.Eq(ty, cstr))
-  | Ast.Unit_lit ->
-     let* unit = create_ty (Type.Prim Type.Unit) in
-     constrain (Type.Eq(ty, unit))
+  (Ok { data = Hashtbl.find_opt s.funcs name; ex = L.empty }, s)
 
 exception String of string
 
-let rec pat_has_ty vars pat ty =
+let rec check_pat pat ty =
   match pat with
   | Ast.As_pat(pat, name) ->
      let* var = fresh_var ty in
      Var.add_name var name;
-     let* pat, map = pat_has_ty (var :: vars) pat.Ast.annot_item ty in
+     let* map = check_pat pat.Ast.annot_item ty in
      if StringMap.mem name map then
        throw (Redefined name)
      else
-       return (pat, StringMap.add name var map)
+       return (StringMap.add name var map)
   | Ast.Constr_pat(name, pats) ->
      let* adt, idx = find_datacon name in
-     let* pats_tys =
-       mapM (fun pat ->
-           let+ ty = fresh_tvar in
-           pat, ty
-         ) pats
-     in
-     let+ pats, varmap = pats_have_tys pats_tys in
-     ( Typed.{
-         pat_node = Constr_pat(ty, adt, idx, pats);
-         pat_vars = vars
-       }
-     , varmap )
+     let _, tys = adt.Type.adt_constrs.(idx) in
+     check_pats pats tys
   | Ast.Var_pat name ->
      let+ var = fresh_var ty in
      Var.add_name var name;
-     ( Typed.{ pat_node = Wild_pat; pat_vars = var :: vars }
-     , StringMap.singleton name var )
-  | Ast.Wild_pat ->
-     return
-       ( Typed.{ pat_node = Wild_pat; pat_vars = vars }
-       , StringMap.empty )
+     StringMap.singleton name var
+  | Ast.Wild_pat -> return StringMap.empty
   | Ast.Lit_pat lit ->
-     let+ () = lit_has_ty lit ty in
-     ( Typed.{
-         pat_vars = vars;
-         pat_node =
-           match lit with
-           | Ast.Int_lit n -> Typed.Int_pat(ty, n)
-           | Ast.Int32_lit n -> Typed.Int_pat(ty, n)
-           | Ast.Str_lit s -> Typed.Str_pat s
-           | Ast.Unit_lit -> Typed.Wild_pat
-       }
-     , StringMap.empty )
+     match lit, ty with
+     | Ast.Int32_lit _, Type.Prim(Type.Num(Type.Signed, Type.Sz32)) ->
+        return StringMap.empty
+     | Ast.Str_lit _, Type.Prim Type.Cstr ->
+        return StringMap.empty
+     | Ast.Unit_lit, Type.Prim Type.Unit ->
+        return StringMap.empty
+     | _, _ -> throw (Unimplemented "Checking int lit pat")
 
-and pats_have_tys pats =
-  fold_rightM (fun (pats, map) (pat, ty) ->
+and check_pats pats tys =
+  let rec tie acc = function
+    | [], [] -> return (List.rev acc)
+    | pat :: pats, ty :: tys ->
+       tie ((pat, ty) :: acc) (pats, tys)
+    | _ :: _, [] -> throw Too_many_patterns
+    | [], _ :: _ -> throw Not_enough_patterns
+  in
+  let* tied = tie [] (pats, tys) in
+  fold_rightM (fun map (pat, ty) ->
       (* Raise exception to break out *)
-      let f k _ _ = raise (String k) in
-      let* pat, map' = pat_has_ty [] pat.Ast.annot_item ty in
-      try return (pat :: pats, StringMap.union f map map') with
+      let f s _ _ = raise (String s) in
+      let* map' = check_pat pat.Ast.annot_item ty in
+      try return (StringMap.union f map map') with
       | String k -> throw (Redefined k)
-    ) ([], StringMap.empty) pats
+    ) StringMap.empty tied
 
-let rec expr_has_ty expr ty =
-  match expr with
+let rec infer subst = function
   | Ast.Apply_expr(f, args) ->
-     let* tys, args =
-       fold_rightM (fun (tys, args) arg ->
-           let* ty = fresh_tvar in
-           let+ arg = expr_has_ty arg.Ast.annot_item ty in
-           ty :: tys, arg :: args)
-         ([], []) args
-     in
-     let* arrow = create_ty (Type.Fun { dom = tys; codom = ty }) in
-     let+ f = expr_has_ty f.annot_item arrow in
-     Typed.Apply_expr(ty, f, args)
+     let* typed_f, f_ty, subst = infer subst f.Ast.annot_item in
+     begin match f_ty with
+     | Type.Fun { dom; codom } ->
+        let rec loop subst typed_args args dom = match args, dom with
+          | [], [] ->
+             return
+               ( Typed.Apply_expr(codom, typed_f, List.rev typed_args)
+               , codom
+               , subst )
+          | arg :: args, ty :: dom ->
+             let* typed_arg, subst = check subst arg.Ast.annot_item ty in
+             loop subst (typed_arg :: typed_args) args dom
+          | _ :: _, [] -> throw Too_many_arguments
+          | [], _ :: _ -> throw Not_enough_arguments
+        in loop subst [] args dom
+     | _ -> throw (Unimplemented "")
+     end
   | Ast.Constr_expr(name, args) ->
      let* adt, idx = find_datacon name in
-     let+ args =
-       let rec loop acc args tys =
+     let+ subst, args =
+       let rec loop subst typed_args args tys =
          match args, tys with
-         | [], [] -> return (List.rev acc)
+         | [], [] -> return (subst, List.rev typed_args)
          | arg :: args, ty :: tys ->
-            let* arg = expr_has_ty arg.Ast.annot_item ty in
-            loop (arg :: acc) args tys
-         | _ :: _, [] | [], _ :: _ -> failwith "mismatch"
+            let* typed_arg, subst = check subst arg.Ast.annot_item ty in
+            loop subst (typed_arg :: typed_args) args tys
+         | _ :: _, [] -> throw Too_many_arguments
+         | [], _ :: _ -> throw Not_enough_arguments
        in
        let _, tys = adt.Type.adt_constrs.(idx) in
-       loop [] args tys
+       loop subst [] args tys
      in
-     let ty = UnionFind.wrap (Type.Constr adt) in
-     Typed.Constr_expr(ty, idx, args)
+     let ty = Type.Constr adt in
+     (Typed.Constr_expr(ty, idx, args), ty, subst)
+  | Ast.Lit_expr (Ast.Int_lit _) -> throw (Unimplemented "Int lit")
+  | Ast.Lit_expr (Ast.Int32_lit n) ->
+     let ty = Type.(Prim (Num(Signed, Sz32))) in
+     return (Typed.Int_expr(ty, n), ty, subst)
+  | Ast.Lit_expr (Ast.Str_lit s) ->
+     return (Typed.Str_expr s, Type.Prim Type.Cstr, subst)
+  | Ast.Lit_expr Ast.Unit_lit ->
+     return (Typed.Unit_expr, Type.Prim Type.Unit, subst)
   | Ast.Seq_expr(e1, e2) ->
-     let* unit = create_ty (Type.Prim Type.Unit) in
-     let* e1 = expr_has_ty e1.annot_item unit in
-     let+ e2 = expr_has_ty e2.annot_item ty in
-     Typed.Seq_expr(e1, e2)
+     let* typed_e1, subst =
+       check subst e1.Ast.annot_item (Type.Prim Type.Unit)
+     in
+     let+ typed_e2, ty, subst = infer subst e2.Ast.annot_item in
+     (Typed.Seq_expr(typed_e1, typed_e2), ty, subst)
   | Ast.Var_expr name ->
      let* var = find name in
      begin match var with
-     | Global (Type.Forall(poly, ty')) ->
-        let* ty_args, inst'ed = inst poly ty' in
-        let+ () = constrain (Type.Eq(inst'ed, ty)) in
-        Typed.Global_expr(name, ty_args)
+     | Global (Type.Forall(0, ty)) ->
+        return (Typed.Global_expr(name, [||]), ty, subst)
+     | Global (Type.Forall(_, _)) ->
+        throw (Unimplemented "Global")
      | Local var ->
-        let+ () = constrain (Type.Eq(Var.ty var, ty)) in
-        Typed.Var_expr var
+        return (Typed.Var_expr var, Var.ty var, subst)
      end
-  | Ast.Lit_expr lit ->
-     let+ () = lit_has_ty lit ty in
-     match lit with
-     | Ast.Int_lit n -> Typed.Int_expr(ty, n)
-     | Ast.Int32_lit n -> Typed.Int_expr(ty, n)
-     | Ast.Str_lit s -> Typed.Str_expr s
-     | Ast.Unit_lit -> Typed.Unit_expr
+  | Ast.Generic_expr(name, tyargs) ->
+     let* var = find name in
+     let* tyargs =
+       mapM (fun ty -> read_ty StringMap.empty ty.Ast.annot_item) tyargs
+     in
+     match var with
+     | Global (Type.Forall(n, ty)) ->
+        let tyargs = Array.of_list tyargs in
+        if n > Array.length tyargs then
+          throw (Unimplemented "Not enough tyargs")
+        else if n < Array.length tyargs then
+          throw (Unimplemented "Too many tyargs")
+        else
+          return (Typed.Global_expr(name, tyargs), Type.inst tyargs ty, subst)
+     | Local _ ->
+        throw (Unimplemented "")
 
-let clause_has_ty clause ty =
-  let* lhs =
-    mapM (fun lhs ->
-        let+ ty = fresh_tvar in
-        (lhs, ty)
-      ) clause.Ast.clause_lhs
-  in
-  let dom = List.map (fun (_, ty) -> ty) lhs in
-  let* lhs, map = pats_have_tys lhs in
-  let* codom = fresh_tvar in
-  let* rhs = in_scope map (expr_has_ty clause.clause_rhs.annot_item codom) in
-  let* arrow = create_ty (Type.Fun({ dom; codom })) in
-  let+ () = constrain (Type.Eq(ty, arrow)) in
-  Typed.{ clause_lhs = lhs; clause_vars = map; clause_rhs = rhs }
+and check subst expr ty = match expr, ty with
+  | expr, ty ->
+     let* typed_expr, ty', subst = infer subst expr in
+     match Type.unify (Type.subst subst ty) ty' with
+     | Error e -> throw (Unimplemented e)
+     | Ok subst' ->
+        return
+          (typed_expr, Type.Subst.union (fun _ a _ -> Some a) subst subst')
 
-let fun_has_ty func ty =
-  let* clauses, ex, cs =
-    poly (mapM (fun clause -> clause_has_ty clause ty) func.Ast.fun_clauses)
+type constrain = Typed.ns Var.t * Ast.pat Ast.annot
+
+type clause = {
+    constraints : constrain list;
+    pat_vars : (Typed.ns Var.t * string) list;
+    rhs : int
+  }
+
+type refutability =
+  | Refut of Typed.ns Var.t
+  | Irrefut of (Typed.ns Var.t * string) list
+
+let rec find_refut acc = function
+  | [] -> Irrefut acc
+  | (_, Ast.{ annot_item = Wild_pat | Lit_pat Unit_lit; _ }) :: rest ->
+     find_refut acc rest
+  | (var, Ast.{ annot_item = As_pat(pat, name); _ }) :: rest ->
+     find_refut ((var, name) :: acc) ((var, pat) :: rest)
+  | (var, Ast.{ annot_item = Constr_pat(_, _) | Lit_pat _; _ }) :: _ ->
+     Refut var
+  | (var, Ast.{ annot_item = Var_pat name; _ }) :: rest ->
+     find_refut ((var, name) :: acc) rest
+
+let rec tie acc vars pats = match vars, pats with
+  | [], [] -> return (List.rev acc)
+  | var :: vars, pat :: pats -> tie ((var, pat) :: acc) vars pats
+  | _ :: _, [] -> throw Not_enough_patterns
+  | [], _ :: _ -> throw Too_many_patterns
+
+let rec filter pat_vars acc var vars datacon = function
+  | [] -> return (Some (pat_vars, List.rev acc))
+  | ((var', pat) as c) :: constraints when Var.equal var var' ->
+     let rec normalize pat_vars' pat =
+       match pat.Ast.annot_item with
+       | Ast.Constr_pat(datacon', pats) ->
+          if datacon = datacon' then
+            let+ tied = tie [] vars pats in
+            Some
+              (pat_vars', List.rev_append acc (List.append tied constraints))
+          else
+            return None
+       | Var_pat _ ->
+          (* Return the original pat-vars *)
+          return (Some (pat_vars, List.rev_append acc (c :: constraints)))
+       | Wild_pat ->
+          (* Return the original pat-vars *)
+          return (Some (pat_vars, List.rev_append acc (c :: constraints)))
+       | As_pat(pat, name) ->
+          normalize ((var, name) :: pat_vars') pat
+       | Lit_pat _ -> failwith "Unreachable: Lit pat"
+     in normalize pat_vars pat
+  | c :: constraints -> filter pat_vars (c :: acc) var vars datacon constraints
+
+let rec filter_str pat_vars acc var = function
+  | [] -> return (None, pat_vars, List.rev acc)
+  | ((var', pat) as c) :: constraints when Var.equal var var' ->
+     let rec normalize pat_vars' pat =
+       match pat.Ast.annot_item with
+       | Ast.Lit_pat(Ast.Str_lit str) ->
+          return (Some str, pat_vars', List.rev_append acc constraints)
+       | Var_pat _ ->
+          (* Return the original pat-vars *)
+          return (None, pat_vars, List.rev_append acc (c :: constraints))
+       | Wild_pat ->
+          (* Return the original pat-vars *)
+          return (None, pat_vars, List.rev_append acc (c :: constraints))
+       | As_pat(pat, name) ->
+          normalize ((var, name) :: pat_vars') pat
+       | Constr_pat _ -> failwith "Unreachable: Constr pt"
+       | Lit_pat _ -> failwith "Unreachable: Lit pat"
+     in normalize pat_vars pat
+  | c :: constraints -> filter_str pat_vars (c :: acc) var constraints
+
+let rec filter_int pat_vars acc var = function
+  | [] -> return (None, pat_vars, List.rev acc)
+  | ((var', pat) as c) :: constraints when Var.equal var var' ->
+     let rec normalize pat_vars' pat =
+       match pat.Ast.annot_item with
+       | Ast.Lit_pat(Ast.Int32_lit n) ->
+          return (Some n, pat_vars', List.rev_append acc constraints)
+       | Var_pat _ ->
+          (* Return the original pat-vars *)
+          return (None, pat_vars, List.rev_append acc (c :: constraints))
+       | Wild_pat ->
+          (* Return the original pat-vars *)
+          return (None, pat_vars, List.rev_append acc (c :: constraints))
+       | As_pat(pat, name) ->
+          normalize ((var, name) :: pat_vars') pat
+       | Constr_pat _ -> failwith "Unreachable: Constr pt"
+       | Lit_pat _ -> failwith "Unreachable: Lit pat"
+     in normalize pat_vars pat
+  | c :: constraints -> filter_int pat_vars (c :: acc) var constraints
+
+let rec elab_clauses clauses dom codom = match clauses with
+  | [] -> throw Incomplete_match
+  | clause :: _ ->
+     match find_refut clause.pat_vars clause.constraints with
+     | Irrefut pat_vars -> return (Typed.Leaf(clause.rhs, pat_vars))
+     | Refut var ->
+        match Var.ty var with
+        | Type.Constr adt ->
+           let+ cases =
+             Array.fold_right (fun datacon acc ->
+                 let* cases = acc in
+                 let+ case = refine datacon var clauses dom codom in
+                 case :: cases
+               ) adt.Type.adt_constrs (return [])
+           in
+           Typed.Split(adt, var, cases)
+        | Type.Prim Type.Cstr ->
+           let+ strmap, otherwise = refine_str var clauses dom codom in
+           Typed.Split_str(var, strmap, otherwise)
+        | Type.Prim (Type.Num(Type.Signed, Type.Sz32)) ->
+           let+ intmap, otherwise = refine_int var clauses dom codom in
+           Typed.Split_int(var, intmap, otherwise)
+        | _ -> throw (Unimplemented "")
+
+and refine (datacon_name, tys) var clauses dom codom =
+  let* fresh_vars = mapM fresh_var tys in
+  let* clauses =
+    fold_rightM (fun acc clause ->
+        let+ opt =
+          filter clause.pat_vars [] var fresh_vars datacon_name
+            clause.constraints
+        in
+        match opt with
+        | None -> acc
+        | Some (pat_vars, constraints) ->
+           { clause with pat_vars; constraints } :: acc
+      ) [] clauses
   in
-  match Solve.solve_many cs with
-    | Error _ -> throw Unification
-    | Ok () ->
-       let+ ty_scheme =
-         let+ opt = get_fun func.Ast.fun_name in
-         match opt with
-         | Some ty_scheme -> ty_scheme
-         | None -> Type.gen ex ty
-       in
-       Typed.{
-           fun_name = func.Ast.fun_name;
-           fun_ty = ty_scheme;
-           fun_clauses = clauses;
-       }
+  let+ tree = elab_clauses clauses dom codom in
+  (fresh_vars, tree)
+
+and refine_str var clauses dom codom =
+  let* strs, otherwise =
+    fold_rightM (fun (strs, otherwise) clause ->
+        let+ (str_opt, pat_vars, constraints) =
+          filter_str clause.pat_vars [] var clause.constraints
+        in
+        let clause = { clause with pat_vars; constraints } in
+        match str_opt with
+        | None ->
+           ( StringMap.map (fun clauses -> clause :: clauses) strs
+           , clause :: otherwise )
+        | Some str ->
+           let clauses = match StringMap.find_opt str strs with
+             | None -> otherwise
+             | Some clauses -> clauses
+           in
+           (StringMap.add str (clause :: clauses) strs, otherwise)
+      ) (StringMap.empty, []) clauses
+  in
+  let+ strs =
+    StringMap.fold (fun str clauses acc ->
+        let+ strmap = acc
+        and+ tree = elab_clauses clauses dom codom in
+        StringMap.add str tree strmap
+      ) strs (return StringMap.empty)
+  and+ otherwise = elab_clauses otherwise dom codom in
+  (strs, otherwise)
+
+and refine_int var clauses dom codom =
+  let* intmap, otherwise =
+    fold_rightM (fun (intmap, otherwise) clause ->
+        let+ (int_opt, pat_vars, constraints) =
+          filter_int clause.pat_vars [] var clause.constraints
+        in
+        let clause = { clause with pat_vars; constraints } in
+        match int_opt with
+        | None ->
+           ( IntMap.map (fun clauses -> clause :: clauses) intmap
+           , clause :: otherwise )
+        | Some int ->
+           let clauses = match IntMap.find_opt int intmap with
+             | None -> otherwise
+             | Some clauses -> clauses
+           in
+           (IntMap.add int (clause :: clauses) intmap, otherwise)
+      ) (IntMap.empty, []) clauses
+  in
+  let+ intmap =
+    IntMap.fold (fun n clauses acc ->
+        let+ strmap = acc
+        and+ tree = elab_clauses clauses dom codom in
+        IntMap.add n tree strmap
+      ) intmap (return IntMap.empty)
+  and+ otherwise = elab_clauses otherwise dom codom in
+  (intmap, otherwise)
+
+let check_fun func fun_typarams Type.{ dom; codom } =
+  let* rhs =
+    mapM (fun clause ->
+        let* map = check_pats clause.Ast.clause_lhs dom in
+        let+ expr, _ =
+          in_scope map
+            (check Type.Subst.empty clause.Ast.clause_rhs.annot_item codom)
+        in (map, expr)
+      ) func.Ast.fun_clauses
+  in
+  let* vars = mapM fresh_var dom in
+  let* _, clauses =
+    fold_leftM (fun (i, clauses) clause ->
+        let rec loop = function
+          | [], [] -> return []
+          | _ :: _, [] -> throw Too_many_patterns
+          | [], _ :: _ -> throw Not_enough_patterns
+          | pat :: pats, var :: vars->
+             let+ constraints = loop (pats, vars) in
+             (var, pat) :: constraints
+        in
+        let+ constraints = loop (clause.Ast.clause_lhs, vars) in
+        (i + 1, { constraints; pat_vars = []; rhs = i } :: clauses)
+      ) (0, []) func.Ast.fun_clauses
+  in
+  let+ tree = elab_clauses (List.rev clauses) dom codom in
+  Typed.{
+      fun_name = func.Ast.fun_name;
+      fun_ty = Type.{ dom; codom };
+      fun_typarams;
+      fun_params = vars;
+      fun_tree = tree;
+      fun_clauses = rhs;
+  }
 
 let elab_program prog =
   let+ decls =
@@ -392,20 +575,14 @@ let elab_program prog =
            let+ () = decl_fun name (Type.Forall(n, ty)) in
            decls
         | Ast.Fun fun_def ->
-           let* ty, declared =
-             let* opt = get_fun fun_def.Ast.fun_name in
-             match opt with
-             | Some (Type.Forall(_, ty)) -> return (ty, true)
-             | None -> let+ ty = fresh_tvar in ty, false
-           in
-           let* fun_def = fun_has_ty fun_def ty in
-           let+ () =
-             if declared then
-               return ()
-             else
-               decl_fun fun_def.Typed.fun_name fun_def.Typed.fun_ty
-           in
-           Typed.Fun fun_def :: decls
+           let* opt = get_fun fun_def.Ast.fun_name in
+           begin match opt with
+           | None -> throw (Undefined fun_def.Ast.fun_name)
+           | Some (Type.Forall(n, Type.Fun ty)) ->
+              let+ fun_def = check_fun fun_def n ty in
+              Typed.Fun fun_def :: decls
+           | Some _ -> throw (Unimplemented "")
+           end
         | Ast.Adt adt ->
            let+ _ = read_adt adt in
            decls

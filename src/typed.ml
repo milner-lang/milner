@@ -1,7 +1,13 @@
+type ns
+
+module IntMap = Map.Make(Int)
 module StringMap = Map.Make(String)
 
-(** [ns] is type-level data intended to index [Var.t] *)
-type ns
+type case_tree =
+  | Leaf of int * (ns Var.t * string) list
+  | Split of Type.adt * ns Var.t * (ns Var.t list * case_tree) list
+  | Split_int of ns Var.t * case_tree IntMap.t * case_tree
+  | Split_str of ns Var.t * case_tree StringMap.t * case_tree
 
 type 'a pat = {
     pat_node : 'a pat_node;
@@ -25,15 +31,18 @@ type expr =
   | Var_expr of ns Var.t
 
 type clause = {
-    clause_lhs : ns Var.t list pat list;
-    clause_vars : ns Var.t StringMap.t;
+    clause_lhs : Type.ns Var.t list pat list;
+    clause_vars : Type.ns Var.t StringMap.t;
     clause_rhs : expr;
   }
 
 type fun_def = {
     fun_name : string;
-    fun_ty : Type.forall;
-    fun_clauses : clause list;
+    fun_ty : Type.fun_ty;
+    fun_typarams : int;
+    fun_params : ns Var.t list;
+    fun_tree : case_tree;
+    fun_clauses : (ns Var.t StringMap.t * expr) list;
   }
 
 type decl =
