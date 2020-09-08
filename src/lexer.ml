@@ -17,8 +17,8 @@ let () =
   Hashtbl.add keywords "as" AS;
   Hashtbl.add keywords "datatype" DATATYPE;
   Hashtbl.add keywords "external" EXTERNAL;
-  Hashtbl.add keywords "forall" FORALL;
   Hashtbl.add keywords "fun" FUN;
+  Hashtbl.add keywords "type" TYPE;
   Hashtbl.add keywords "val" VAL
 
 let rec tokenize lexbuf = match%sedlex lexbuf with
@@ -35,7 +35,6 @@ let rec tokenize lexbuf = match%sedlex lexbuf with
   | '_' -> UNDERSCORE
   | '"' -> string (Buffer.create 17) lexbuf
   | 0x2192 (* → *) -> ARROW
-  | 0x2200 (* ∀ *) -> FORALL
   | "->" -> ARROW
   | base10_int, "i32" ->
      let str = Sedlexing.Utf8.lexeme lexbuf in

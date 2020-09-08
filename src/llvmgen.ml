@@ -81,27 +81,28 @@ let rec erase_types = function
 
 let rec mangle_ty global type_args ty =
   match ty with
-  | Type.Constr adt ->
-     ignore (compile_datatype global adt);
+  | Type.Constr (Type.Adt(adt, tyargs)) ->
+     ignore (compile_datatype global adt tyargs);
      adt.Type.adt_name
-  | Type.Prim prim ->
+  | Type.Constr Type.Cstr -> "cstr"
+  | Type.Constr (Type.Num(_, sz)) ->
      (* Ints and nats share the same machine representation, so instantiations
         for ints and nats can share the same code *)
-     begin match prim with
-     | Type.Cstr -> "cstr"
-     | Type.Num(_, Type.Sz8) -> "int8"
-     | Type.Num(_, Type.Sz16) -> "int16"
-     | Type.Num(_, Type.Sz32) -> "int32"
-     | Type.Num(_, Type.Sz64) -> "int64"
-     | Type.Unit -> "unit"
+     begin match sz with
+     | Type.Sz8 -> "int8"
+     | Type.Sz16 -> "int16"
+     | Type.Sz32 -> "int32"
+     | Type.Sz64 -> "int64"
      end
   | Type.Fun _fun_ty -> ""
   | Type.Pointer _ -> "pointer"
   | Type.Rigid v -> mangle_ty global type_args type_args.(v)
   | Type.Var _ -> failwith "Unsolved type variable !?"
-  | Type.Univ -> "univ"
+  | Type.Unit -> "unit"
+  | Type.Univ -> failwith "univ"
+  | Type.KArrow _ -> failwith "Unreachable"
 
-and compile_datatype global adt =
+and compile_datatype global adt _ =
   let rec classify_datatype idx = function
     | [] -> No_constrs
     | (name, datacon) :: datacons ->
@@ -186,7 +187,7 @@ and transl_size llctx = function
 and transl_ty global ty_args ty : transl_ty =
   let llctx = global.llctx in
   match ty with
-  | Type.Constr _adt ->
+  | Type.Constr (Type.Adt(_adt, _)) ->
      let mangled = mangle_ty global [||] ty in
      begin match Hashtbl.find global.types mangled with
      | Uninhabited -> Uninhabited_ty
@@ -194,12 +195,8 @@ and transl_ty global ty_args ty : transl_ty =
      | Product(_, ty) -> Ll_ty ty
      | Basic_sum(ty, _) -> Ll_ty ty
      end
-  | Type.Prim prim ->
-     begin match prim with
-     | Type.Cstr -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
-     | Type.Num(_, sz) -> Ll_ty (transl_size llctx sz)
-     | Type.Unit -> Zero_ty
-     end
+  | Type.Constr Type.Cstr -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
+  | Type.Constr (Type.Num(_, sz)) -> Ll_ty (transl_size llctx sz)
   | Type.Fun fun_ty ->
      begin match transl_fun_ty global ty_args fun_ty with
      | None -> Uninhabited_ty
@@ -207,11 +204,12 @@ and transl_ty global ty_args ty : transl_ty =
         let params = params |> remove_nones |> Array.of_list in
         Ll_ty (Llvm.function_type ret params)
      end
-  | Type.Pointer _ ->
-     Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
+  | Type.Pointer _ -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
   | Type.Rigid v -> transl_ty global ty_args ty_args.(v)
   | Type.Var _ -> failwith "Unsolved type variable!?"
+  | Type.Unit -> Zero_ty
   | Type.Univ -> Zero_ty
+  | Type.KArrow _ -> failwith "Unreachable"
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
@@ -277,11 +275,7 @@ and emit_cmp kind global t dest lhs rhs =
      Hashtbl.add t.regs dest llval
 
 and emit_expr global t = function
-  | Ir.Switch(ty, scrut, cases, default) ->
-     let size = match ty with
-       | Type.Prim (Type.Num(_, sz)) -> sz
-       | _ -> failwith "Unreachable: Not an int"
-     in
+  | Ir.Switch((_, size), scrut, cases, default) ->
      let default = match default with
        | Some (Block default) -> Hashtbl.find t.bbs default
        | None ->
@@ -580,7 +574,7 @@ let emit_module datalayout llctx name prog =
            | _ -> failwith "External symbol not a function!"
            end
         | Ir.Fun fun_def ->
-           if fun_def.Ir.fun_poly = 0 then
+           if fun_def.Ir.fun_poly = [] then
              ignore (emit_fun global [||] fun_def)
       ) prog.Ir.decls;
     Llvm.set_data_layout

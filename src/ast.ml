@@ -6,6 +6,7 @@ type 'a annot = {
 
 type ty =
   | Arrow of ty annot list * ty annot
+  | Ty_app of ty annot * ty annot
   | Ty_con of string
   | Ty_var of string
   | Unit
@@ -13,7 +14,7 @@ type ty =
 
 type adt = {
     adt_name : string;
-    adt_params : string list;
+    adt_params : (string * ty annot) list;
     adt_constrs : (string * ty annot list) list;
   }
 
@@ -50,7 +51,7 @@ type fun_def = {
 
 type decl =
   | External of string * ty annot
-  | Forward_decl of string * string list * ty annot
+  | Forward_decl of string * (string * ty annot) list * ty annot
   | Fun of fun_def
   | Adt of adt
 

@@ -31,7 +31,7 @@ type aexp =
 type cont = Block of int
 
 type expr =
-  | Switch of Type.t * aexp * cont IntMap.t * cont option
+  | Switch of (Type.sign * Type.size) * aexp * cont IntMap.t * cont option
   | Continue of cont * (ns Var.t * string) list
   | If of aexp * cont * cont
   | Let_aexp of ns Var.t * aexp * expr
@@ -51,7 +51,7 @@ type expr =
 type fun_def = {
     fun_name : string;
     fun_ty : Type.fun_ty;
-    fun_poly : int;
+    fun_poly : Type.t list;
     fun_vars : ns Var.t list;
     fun_body : expr;
   }
@@ -199,7 +199,7 @@ let rec compile_case_tree rhs = function
          ) (return (0, [], IntMap.empty)) cases
      in
      let expr =
-       let ty = Type.Prim (Type.Num(Type.Unsigned, Type.Sz8)) in
+       let ty = (Type.Unsigned, Type.Sz8) in
        Let_get_tag(
            tag_reg, scrut,
            Switch(ty, Reg tag_reg, jumptable, None))
@@ -218,7 +218,7 @@ let rec compile_case_tree rhs = function
          ) cases (return ([], IntMap.empty))
      and+ default_id = fresh_block
      and+ default = compile_case_tree rhs otherwise in
-     let ty = Type.Prim (Type.Num(Type.Unsigned, Type.Sz32)) in
+     let ty = (Type.Unsigned, Type.Sz32) in
      let expr =
        Let_cont(default_id, [], default,
                 Switch(ty, Var scrut, jumptable, Some (Block default_id)))

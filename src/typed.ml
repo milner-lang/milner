@@ -39,7 +39,7 @@ type clause = {
 type fun_def = {
     fun_name : string;
     fun_ty : Type.fun_ty;
-    fun_typarams : int;
+    fun_typarams : Type.t list;
     fun_params : ns Var.t list;
     fun_tree : case_tree;
     fun_clauses : (ns Var.t StringMap.t * expr) list;

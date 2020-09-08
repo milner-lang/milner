@@ -16,8 +16,8 @@
 %token AS
 %token DATATYPE
 %token EXTERNAL
-%token FORALL
 %token FUN
+%token TYPE
 %token VAL
 %token <int> INT_LIT
 %token <int> INT32_LIT
@@ -65,7 +65,7 @@ let decl :=
     }
 
 let adt :=
-  DATATYPE; adt_name = UIDENT; adt_params = list(LIDENT); EQUALS; BAR?;
+  DATATYPE; adt_name = UIDENT; adt_params = list(adt_param); EQUALS; BAR?;
   adt_constrs = separated_list(BAR, constr);
     {
       Ast.{
@@ -74,6 +74,8 @@ let adt :=
         adt_constrs;
       }
     }
+
+let adt_param := LPAREN; id = LIDENT; COLON; ~ = ty; RPAREN; { (id, ty) }
 
 let constr :=
   | name = UIDENT; {
@@ -87,9 +89,11 @@ let external_decl := EXTERNAL; name = LIDENT; COLON; ~ = ty; {
     (name, ty)
   }
 
-let forward_decl := VAL; name = LIDENT; COLON; ~ = ty_scheme; {
-        let tvars, ty = ty_scheme in
-        (name, tvars, ty)
+let forward_decl :=
+  | VAL; name = LIDENT; COLON; ~ = ty; { (name, [], ty) }
+  | VAL; name = LIDENT; LANGLE;
+    params = separated_list(COMMA, ty_scheme_param); RANGLE; COLON; ~ = ty; {
+        (name, params, ty)
       }
 
 let fun_def :=
@@ -100,13 +104,7 @@ let fun_def :=
         }
       }
 
-let ty_scheme :=
-  | ~ = ty; {
-      ([], ty)
-    }
-  | FORALL; tvars = list(LIDENT); COMMA; ~ = ty; {
-      (tvars, ty)
-    }
+let ty_scheme_param := name = LIDENT; COLON; ~ = ty; { (name, ty) }
 
 let ty := arrow_ty
 
@@ -122,6 +120,13 @@ let arrow_ty :=
   | atom_ty
 
 let atom_ty :=
+  | TYPE; {
+    Ast.{
+      annot_item = Univ;
+      annot_begin = $symbolstartpos;
+      annot_end = $endpos;
+    }
+    }
   | id = UIDENT; {
     Ast.{
       annot_item = Ty_con id;
