@@ -29,14 +29,20 @@ and adt = {
     adt_name : string;
     adt_params : int;
     adt_kind : t;
-    adt_constrs : (string * t list) array;
+    adt_constr_names : (string, int) Hashtbl.t;
+    adt_constrs : datacon array;
+  }
+
+and datacon = {
+    datacon_name : string;
+    datacon_inputs : t list;
+    datacon_output : t;
   }
 
 type forall = Forall of t list * t
 
 let rec subst s = function
-  | Constr (Adt(adt, spine)) ->
-     Constr(Adt(adt, List.map (subst s) spine))
+  | Constr (Adt(adt, spine)) -> Constr(Adt(adt, List.map (subst s) spine))
   | Constr head -> Constr head
   | Fun fn -> Fun { dom = List.map (subst s) fn.dom; codom = subst s fn.codom }
   | KArrow(t1, t2) -> KArrow(subst s t1, subst s t2)

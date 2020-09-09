@@ -2,7 +2,7 @@ external puts : fun(Cstring) -> ()
 
 datatype Bool = False | True
 
-datatype IntOpt = None | Some(Int32)
+datatype Option (a : type) = None | Some(a)
 
 datatype Pt = Pt(Int32, Int32)
 
@@ -15,7 +15,7 @@ fun f
     puts("True");
     1i32
 
-val g: fun(IntOpt) -> Bool
+val g: fun(Option Int32) -> Bool
 fun g
   | (Some(5i32)) = False
   | (_) = True

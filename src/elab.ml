@@ -27,7 +27,6 @@ let string_of_error = function
 
 type state = {
     tycons : (string, Type.tycon * Type.t) Hashtbl.t;
-    datacons : (string, Type.adt * int) Hashtbl.t;
     funcs : (string, Type.forall) Hashtbl.t;
     metavar_gen : int;
     var_gen : Typed.ns Var.gen;
@@ -35,14 +34,8 @@ type state = {
 
 type 'a payload = {
     data : 'a;
-    ex : Type.t L.t; (** Existential variables *)
   }
 
-(* In the paper "Hindley-Milner Elaboration in Applicative Style," the wrapped
-   data 'a is embedded inside a continuation of type env -> 'a. The paper notes
-   that the presence of the continuation prevents the type from having a monad
-   instance; it only has an applicative instance. Because I do not wrap the
-   data in a continuation, I can have a monad. *)
 type 'a t =
   Typed.ns Var.t Symtable.t -> state -> ('a payload, error) result * state
 
@@ -54,7 +47,6 @@ let init_state () =
   Hashtbl.add tycons "Int32" (Type.Num(Type.Signed, Type.Sz32), Type.Univ);
   { var_gen = Var.init_gen;
     metavar_gen = 0;
-    datacons = Hashtbl.create 20;
     funcs = Hashtbl.create 20;
     tycons }
 
@@ -67,13 +59,13 @@ let run m =
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
 
-  let return a _env s = (Ok { data = a; ex = L.empty }, s)
+  let return a _env s = (Ok { data = a }, s)
 
   let ( let+ ) t f env s =
     let r, s = t env s in
     match r with
     | Error e -> (Error e, s)
-    | Ok w -> (Ok { w with data = f w.data }, s)
+    | Ok w -> (Ok { data = f w.data }, s)
 
   let ( and+ ) t1 t2 env s =
     let r1, s = t1 env s in
@@ -86,7 +78,6 @@ module Mon : Monad.MONAD with type 'a t = 'a t = struct
        | Ok w2 ->
           ( Ok {
                 data = (w1.data, w2.data);
-                ex = L.append w1.ex w2.ex;
               }
           , s )
 
@@ -103,7 +94,6 @@ module Mon : Monad.MONAD with type 'a t = 'a t = struct
        | Ok w2 ->
           ( Ok {
                 data = w2.data;
-                ex = L.append w1.ex w2.ex;
               }
           , s )
 end
@@ -123,33 +113,24 @@ type var_kind =
 
 let find name env s =
   match Symtable.find name env with
-  | Some var -> (Ok { data = Local var; ex = L.empty }, s)
+  | Some var -> (Ok { data = Local var }, s)
   | None ->
      match Hashtbl.find_opt s.funcs name with
-     | Some ty -> (Ok { data = Global ty; ex = L.empty }, s)
+     | Some ty -> (Ok { data = Global ty }, s)
      | None -> (Error (Undefined name), s)
 
 let declare_tycon name tycon kind _ s =
   Hashtbl.add s.tycons name (tycon, kind);
-  (Ok { data = (); ex = L.empty }, s)
+  (Ok { data = () }, s)
 
 let find_tcon name _ s =
   match Hashtbl.find_opt s.tycons name with
   | None -> (Error (Undefined name), s)
-  | Some ty -> (Ok { data = ty; ex = L.empty }, s)
+  | Some ty -> (Ok { data = ty }, s)
 
 let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
-  (Ok { data = var; ex = L.empty }, { s with var_gen })
-
-let declare_datacon name idx adt _ s =
-  Hashtbl.add s.datacons name (idx, adt);
-  (Ok { data = (); ex = L.empty }, s)
-
-let find_datacon name _ s =
-  match Hashtbl.find_opt s.datacons name with
-  | Some data -> (Ok { data; ex = L.empty }, s)
-  | None -> Error (Undefined name), s
+  (Ok { data = var }, { s with var_gen })
 
 (** Infer the kind of a type. *)
 let rec ty_infer tvars = function
@@ -161,7 +142,7 @@ let rec ty_infer tvars = function
      | Type.Constr(Adt(adt, spine)), Type.KArrow(dom, cod) ->
         let+ x = ty_check tvars x.Ast.annot_item dom in
         Type.Constr(Adt(adt, x :: spine)), cod
-     | _ -> throw (Unimplemented "")
+     | _ -> throw (Unimplemented "Ty infer app")
      end
   | Ast.Ty_con tycon ->
      let+ ty, kind = find_tcon tycon in
@@ -178,7 +159,7 @@ let rec ty_infer tvars = function
 and ty_check tvars ast_ty kind =
   let* ty, kind' = ty_infer tvars ast_ty in
   match Type.unify kind' kind with
-  | Error _ -> throw (Unimplemented "")
+  | Error _ -> throw (Unimplemented "Unify error")
   | Ok _ -> return ty
 
 let read_ty_scheme tvars ty =
@@ -192,39 +173,52 @@ let read_ty_scheme tvars ty =
       (0, StringMap.empty, []) tvars
   in
   let+ ty, _ = ty_infer tvar_map ty in
-  List.rev kinds, ty
+  Type.Forall(List.rev kinds, ty)
 
 let read_adt adt =
-  let constrs = Array.make (List.length adt.Ast.adt_constrs) ("", []) in
-  let* _, tparams =
-    fold_leftM (fun (i, map) (name, kind) ->
-        let+ kind = ty_check StringMap.empty kind.Ast.annot_item Type.Univ in
-        i + 1, StringMap.add name (Type.Rigid i, kind) map
-      ) (0, StringMap.empty) adt.Ast.adt_params
+  let constrs =
+    (* Dummy values; these should all be replaced *)
+    Array.make (List.length adt.Ast.adt_constrs)
+      { Type.datacon_name = ""
+      ; datacon_inputs = []
+      ; datacon_output = Type.Univ }
   in
-  let* _ =
-    fold_leftM (fun i (name, tys) ->
-        let+ tys =
-          mapM (fun ann ->
-              ty_check tparams ann.Ast.annot_item Type.Univ) tys
-        in
-        constrs.(i) <- (name, tys);
-        i + 1)
-      0 adt.Ast.adt_constrs
+  let* param_count, params, kinds, tparams =
+    fold_leftM (fun (i, params, kinds, map) (name, kind) ->
+        let+ kind = ty_check StringMap.empty kind.Ast.annot_item Type.Univ in
+        let ty = Type.Rigid i in
+        i + 1, ty :: params, kind :: kinds, StringMap.add name (ty, kind) map)
+      (0, [], [], StringMap.empty) adt.Ast.adt_params
+  in
+  let datacons = Hashtbl.create (Array.length constrs) in
+  let rec loop = function
+    | [] -> Type.Univ
+    | kind :: kinds -> Type.KArrow(kind, loop kinds)
   in
   let adt' =
     Type.{
         adt_name = adt.Ast.adt_name;
-        adt_params = 0;
-        adt_kind = Type.Univ;
-        adt_constrs = constrs
+        adt_params = param_count;
+        adt_kind = loop kinds;
+        adt_constr_names = datacons;
+        adt_constrs = constrs;
     }
   in
   let* _ =
-    fold_leftM (fun i (name, _) ->
-        let+ () = declare_datacon name adt' i in
+    fold_leftM (fun i (name, tys) ->
+        let+ tys =
+          mapM (fun ann -> ty_check tparams ann.Ast.annot_item Type.Univ) tys
+        in
+        let datacon =
+          { Type.datacon_name = name
+          ; datacon_inputs = tys
+          ; datacon_output = Type.Constr(Type.Adt(adt', params)) }
+        in
+        constrs.(i) <- datacon;
+        Hashtbl.add datacons name i;
         i + 1)
-      0 adt.Ast.adt_constrs in
+      0 adt.Ast.adt_constrs
+  in
   let+ () =
     declare_tycon adt.Ast.adt_name (Type.Adt(adt', [])) adt'.Type.adt_kind
   in
@@ -235,11 +229,11 @@ let decl_fun name ty _ s =
     (Error (Redefined name), s)
   else (
     Hashtbl.add s.funcs name ty;
-    (Ok { data = (); ex = L.empty }, s)
+    (Ok { data = () }, s)
   )
 
 let get_fun name _ s =
-  (Ok { data = Hashtbl.find_opt s.funcs name; ex = L.empty }, s)
+  (Ok { data = Hashtbl.find_opt s.funcs name }, s)
 
 exception String of string
 
@@ -254,9 +248,15 @@ let rec check_pat pat ty =
      else
        return (StringMap.add name var map)
   | Ast.Constr_pat(name, pats) ->
-     let* adt, idx = find_datacon name in
-     let _, tys = adt.Type.adt_constrs.(idx) in
-     check_pats pats tys
+     begin match ty with
+     | Type.Constr(Type.Adt(adt, tyargs)) ->
+        let idx = Hashtbl.find adt.Type.adt_constr_names name in
+        let datacon = adt.Type.adt_constrs.(idx) in
+        let tyargs = Array.of_list (List.rev tyargs) in
+        let tys = List.map (Type.inst tyargs) datacon.Type.datacon_inputs in
+        check_pats pats tys
+     | _ -> throw (Unimplemented "")
+     end
   | Ast.Var_pat name ->
      let+ var = fresh_var ty in
      Var.add_name var name;
@@ -264,14 +264,11 @@ let rec check_pat pat ty =
   | Ast.Wild_pat -> return StringMap.empty
   | Ast.Lit_pat lit ->
      match lit, ty with
-     | Ast.Int32_lit _,
-       Type.Constr(Type.Num(Type.Signed, Type.Sz32)) ->
+     | Ast.Int32_lit _, Type.Constr(Type.Num(Type.Signed, Type.Sz32)) ->
         return StringMap.empty
-     | Ast.Str_lit _, Type.Constr Type.Cstr ->
-        return StringMap.empty
-     | Ast.Unit_lit, Type.Unit ->
-        return StringMap.empty
-     | _, _ -> throw (Unimplemented "Checking int lit pat")
+     | Ast.Str_lit _, Type.Constr Type.Cstr -> return StringMap.empty
+     | Ast.Unit_lit, Type.Unit -> return StringMap.empty
+     | _, _ -> throw (Unimplemented "Checking lit pat")
 
 and check_pats pats tys =
   let rec tie acc = function
@@ -307,25 +304,9 @@ let rec infer subst = function
           | _ :: _, [] -> throw Too_many_arguments
           | [], _ :: _ -> throw Not_enough_arguments
         in loop subst [] args dom
-     | _ -> throw (Unimplemented "")
+     | _ -> throw (Unimplemented "Infer apply expr")
      end
-  | Ast.Constr_expr(name, args) ->
-     let* adt, idx = find_datacon name in
-     let+ subst, args =
-       let rec loop subst typed_args args tys =
-         match args, tys with
-         | [], [] -> return (subst, List.rev typed_args)
-         | arg :: args, ty :: tys ->
-            let* typed_arg, subst = check subst arg.Ast.annot_item ty in
-            loop subst (typed_arg :: typed_args) args tys
-         | _ :: _, [] -> throw Too_many_arguments
-         | [], _ :: _ -> throw Not_enough_arguments
-       in
-       let _, tys = adt.Type.adt_constrs.(idx) in
-       loop subst [] args tys
-     in
-     let ty = Type.Constr (Type.Adt(adt, [])) in
-     (Typed.Constr_expr(ty, idx, args), ty, subst)
+  | Ast.Constr_expr _ -> throw (Unimplemented "Cannot infer data constructor")
   | Ast.Lit_expr (Ast.Int_lit _) -> throw (Unimplemented "Int lit")
   | Ast.Lit_expr (Ast.Int32_lit n) ->
      let ty = Type.(Constr (Num(Signed, Sz32))) in
@@ -343,10 +324,8 @@ let rec infer subst = function
      begin match var with
      | Global (Type.Forall([], ty)) ->
         return (Typed.Global_expr(name, [||]), ty, subst)
-     | Global (Type.Forall(_, _)) ->
-        throw (Unimplemented "Global")
-     | Local var ->
-        return (Typed.Var_expr var, Var.ty var, subst)
+     | Global (Type.Forall(_, _)) -> throw (Unimplemented "Global")
+     | Local var -> return (Typed.Var_expr var, Var.ty var, subst)
      end
   | Ast.Generic_expr(name, tyargs) ->
      let* var = find name in
@@ -358,22 +337,41 @@ let rec infer subst = function
              let+ ty = ty_check StringMap.empty ty.Ast.annot_item kind
              and+ rest = loop (tys, kinds) in
              ty :: rest
-          | [], _ :: _ ->
-             throw (Unimplemented "Not enough tyargs")
-          | _ :: _, [] ->
-             throw (Unimplemented "Too many tyargs")
+          | [], _ :: _ -> throw (Unimplemented "Not enough tyargs")
+          | _ :: _, [] -> throw (Unimplemented "Too many tyargs")
         in
         let* tyargs = loop (tyargs, kinds) in
         let tyargs = Array.of_list tyargs in
         return (Typed.Global_expr(name, tyargs), Type.inst tyargs ty, subst)
-     | Local _ ->
-        throw (Unimplemented "")
+     | Local _ -> throw (Unimplemented "Local with generics")
 
 and check subst expr ty = match expr, ty with
+  | Ast.Constr_expr(name, args), Type.Constr(Type.Adt(adt, tyargs)) ->
+     let idx = Hashtbl.find adt.Type.adt_constr_names name in
+     let datacon = adt.Type.adt_constrs.(idx) in
+     let tyargs = Array.of_list (List.rev tyargs) in
+     let* subst, args =
+       let rec loop subst typed_args args tys =
+         match args, tys with
+         | [], [] -> return (subst, List.rev typed_args)
+         | arg :: args, ty :: tys ->
+            let ty = Type.inst tyargs ty in
+            let* typed_arg, subst = check subst arg.Ast.annot_item ty in
+            loop subst (typed_arg :: typed_args) args tys
+         | _ :: _, [] -> throw Too_many_arguments
+         | [], _ :: _ -> throw Not_enough_arguments
+       in
+       loop subst [] args datacon.Type.datacon_inputs
+     in
+     let ty' = Type.inst tyargs datacon.Type.datacon_output in
+     begin match Type.unify ty ty' with
+     | Error _ -> throw (Unimplemented "Datacon unify error")
+     | Ok _ -> return (Typed.Constr_expr(ty, idx, args), subst)     
+     end
   | expr, ty ->
      let* typed_expr, ty', subst = infer subst expr in
      match Type.unify (Type.subst subst ty) ty' with
-     | Error e -> throw (Unimplemented e)
+     | Error e -> throw (Unimplemented (e ^ "unify check"))
      | Ok subst' ->
         return
           (typed_expr, Type.Subst.union (fun _ a _ -> Some a) subst subst')
@@ -425,8 +423,7 @@ let rec filter pat_vars acc var vars datacon = function
        | Wild_pat ->
           (* Return the original pat-vars *)
           return (Some (pat_vars, List.rev_append acc (c :: constraints)))
-       | As_pat(pat, name) ->
-          normalize ((var, name) :: pat_vars') pat
+       | As_pat(pat, name) -> normalize ((var, name) :: pat_vars') pat
        | Lit_pat _ -> failwith "Unreachable: Lit pat"
      in normalize pat_vars pat
   | c :: constraints -> filter pat_vars (c :: acc) var vars datacon constraints
@@ -444,8 +441,7 @@ let rec filter_str pat_vars acc var = function
        | Wild_pat ->
           (* Return the original pat-vars *)
           return (None, pat_vars, List.rev_append acc (c :: constraints))
-       | As_pat(pat, name) ->
-          normalize ((var, name) :: pat_vars') pat
+       | As_pat(pat, name) -> normalize ((var, name) :: pat_vars') pat
        | Constr_pat _ -> failwith "Unreachable: Constr pt"
        | Lit_pat _ -> failwith "Unreachable: Lit pat"
      in normalize pat_vars pat
@@ -464,8 +460,7 @@ let rec filter_int pat_vars acc var = function
        | Wild_pat ->
           (* Return the original pat-vars *)
           return (None, pat_vars, List.rev_append acc (c :: constraints))
-       | As_pat(pat, name) ->
-          normalize ((var, name) :: pat_vars') pat
+       | As_pat(pat, name) -> normalize ((var, name) :: pat_vars') pat
        | Constr_pat _ -> failwith "Unreachable: Constr pt"
        | Lit_pat _ -> failwith "Unreachable: Lit pat"
      in normalize pat_vars pat
@@ -478,11 +473,12 @@ let rec elab_clauses clauses dom codom = match clauses with
      | Irrefut pat_vars -> return (Typed.Leaf(clause.rhs, pat_vars))
      | Refut var ->
         match Var.ty var with
-        | Type.Constr (Type.Adt(adt, _)) ->
+        | Type.Constr (Type.Adt(adt, tyargs)) ->
+           let tyargs = Array.of_list (List.rev tyargs) in
            let+ cases =
              Array.fold_right (fun datacon acc ->
                  let* cases = acc in
-                 let+ case = refine datacon var clauses dom codom in
+                 let+ case = refine datacon tyargs var clauses dom codom in
                  case :: cases
                ) adt.Type.adt_constrs (return [])
            in
@@ -493,14 +489,16 @@ let rec elab_clauses clauses dom codom = match clauses with
         | Type.Constr (Type.Num(Type.Signed, Type.Sz32)) ->
            let+ intmap, otherwise = refine_int var clauses dom codom in
            Typed.Split_int(var, intmap, otherwise)
-        | _ -> throw (Unimplemented "")
+        | Type.Rigid _ -> throw (Unimplemented "Rigid")
+        | _ -> throw (Unimplemented "Not a pattern-matchable type")
 
-and refine (datacon_name, tys) var clauses dom codom =
+and refine datacon tyargs var clauses dom codom =
+  let tys = List.map (Type.inst tyargs) datacon.Type.datacon_inputs in
   let* fresh_vars = mapM fresh_var tys in
   let* clauses =
     fold_rightM (fun acc clause ->
         let+ opt =
-          filter clause.pat_vars [] var fresh_vars datacon_name
+          filter clause.pat_vars [] var fresh_vars datacon.Type.datacon_name
             clause.constraints
         in
         match opt with
@@ -612,8 +610,8 @@ let elab_program prog =
            let+ () = decl_fun name (Type.Forall([], ty)) in
            Typed.External(name, ty) :: decls
         | Ast.Forward_decl(name, tvars, ty) ->
-           let* kinds, ty = read_ty_scheme tvars ty.Ast.annot_item in
-           let+ () = decl_fun name (Type.Forall(kinds, ty)) in
+           let* forall = read_ty_scheme tvars ty.Ast.annot_item in
+           let+ () = decl_fun name forall in
            decls
         | Ast.Fun fun_def ->
            let* opt = get_fun fun_def.Ast.fun_name in
@@ -622,7 +620,7 @@ let elab_program prog =
            | Some (Type.Forall(kinds, Type.Fun ty)) ->
               let+ fun_def = check_fun fun_def kinds ty in
               Typed.Fun fun_def :: decls
-           | Some _ -> throw (Unimplemented "")
+           | Some _ -> throw (Unimplemented "Not the function type")
            end
         | Ast.Adt adt ->
            let+ _ = read_adt adt in

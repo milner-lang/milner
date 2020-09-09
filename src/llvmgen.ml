@@ -79,11 +79,11 @@ let rec erase_types = function
   | Ll_ty llty :: tys ->
      Option.map (fun tys -> Some llty :: tys) (erase_types tys)
 
-let rec mangle_ty global type_args ty =
-  match ty with
+let rec mangle_ty global type_args = function
   | Type.Constr (Type.Adt(adt, tyargs)) ->
-     ignore (compile_datatype global adt tyargs);
-     adt.Type.adt_name
+     let name = mangle_datatype global type_args adt tyargs in
+     ignore (compile_datatype global type_args adt tyargs);
+     name
   | Type.Constr Type.Cstr -> "cstr"
   | Type.Constr (Type.Num(_, sz)) ->
      (* Ints and nats share the same machine representation, so instantiations
@@ -102,7 +102,19 @@ let rec mangle_ty global type_args ty =
   | Type.Univ -> failwith "univ"
   | Type.KArrow _ -> failwith "Unreachable"
 
-and compile_datatype global adt _ =
+and mangle_datatype global type_args adt adt_args =
+  let mangled_adt_args = List.rev_map (mangle_ty global type_args) adt_args in
+  let rec loop mangled n mangled_adt_args =
+    if n = 0 then
+      mangled
+    else
+      match mangled_adt_args with
+      | [] -> failwith "Unreachable"
+      | x :: xs -> loop (mangled ^ x) (n - 1) xs
+  in loop adt.Type.adt_name adt.Type.adt_params mangled_adt_args
+
+and compile_datatype global type_args adt adt_tyargs =
+  let adt_name = mangle_datatype global type_args adt adt_tyargs in
   let rec classify_datatype idx = function
     | [] -> No_constrs
     | (name, datacon) :: datacons ->
@@ -113,15 +125,17 @@ and compile_datatype global adt _ =
        | Many_constrs datacons ->
           Many_constrs((name, idx, datacon) :: datacons)
   in
-  match Hashtbl.find_opt global.types adt.Type.adt_name with
+  match Hashtbl.find_opt global.types adt_name with
   | Some ty -> ty
   | None ->
      let datacons =
-       Array.fold_right (fun (name, tys) acc ->
-           match List.map (transl_ty global [||]) tys |> erase_types with
+       Array.fold_right (fun datacon acc ->
+           let tyargs = Array.of_list (List.rev adt_tyargs) in
+           let tys = List.map (Type.inst tyargs) datacon.Type.datacon_inputs in
+           match List.map (transl_ty global type_args) tys |> erase_types with
            | None -> acc
-           | Some tys -> (name, tys) :: acc
-         ) adt.Type.adt_constrs []
+           | Some tys -> (datacon.Type.datacon_name, tys) :: acc)
+         adt.Type.adt_constrs []
      in
      let datatype =
        match classify_datatype 0 datacons with
@@ -134,7 +148,7 @@ and compile_datatype global adt _ =
        | Many_constrs datacons ->
           let datacon_arr = Array.make (List.length datacons) None in
           List.iter (fun (name, idx, tys) ->
-              let name = adt.Type.adt_name ^ "__" ^ name in
+              let name = adt_name ^ "__" ^ name in
               let ty = Llvm.named_struct_type global.llctx name in
               let tys =
                 (Llvm.i8_type global.llctx :: (tys |> remove_nones))
@@ -159,12 +173,11 @@ and compile_datatype global adt _ =
           Llvm.struct_set_body ty
             [| Llvm.i8_type global.llctx
              ; Llvm.array_type
-                 (Llvm.i8_type global.llctx)
-                 ((Int64.to_int size) - 1) |]
+                 (Llvm.i8_type global.llctx) ((Int64.to_int size) - 1) |]
             false;
           Basic_sum(ty, datacon_arr)
      in
-     Hashtbl.add global.types adt.Type.adt_name datatype;
+     Hashtbl.add global.types adt_name datatype;
      datatype
 
 and mangle_fun global type_args name fun_ty =

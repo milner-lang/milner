@@ -117,6 +117,16 @@ let arrow_ty :=
         annot_end = $endpos;
       }
     }
+  | app_ty
+
+let app_ty :=
+  | f = app_ty; x = atom_ty; {
+        Ast.{
+          annot_item = Ty_app(f, x);
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
   | atom_ty
 
 let atom_ty :=
