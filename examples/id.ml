@@ -7,4 +7,4 @@ val main : fun() -> Int32
 fun main() =
   puts(id.<Cstring>("Hello polymorphic world!"));
   id.<()>(());
-  id.<Int32>(0i32)
+  id.<Int32>(0)

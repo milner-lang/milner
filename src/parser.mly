@@ -162,7 +162,6 @@ let atom_ty :=
 
 let lit :=
   | int = INT_LIT; { Ast.Int_lit int }
-  | int = INT32_LIT; { Ast.Int32_lit int }
   | str = STRING_LIT; { Ast.Str_lit str }
   | LPAREN; RPAREN; { Ast.Unit_lit }
 

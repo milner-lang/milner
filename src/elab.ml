@@ -264,7 +264,7 @@ let rec check_pat pat ty =
   | Ast.Wild_pat -> return StringMap.empty
   | Ast.Lit_pat lit ->
      match lit, ty with
-     | Ast.Int32_lit _, Type.Constr(Type.Num(Type.Signed, Type.Sz32)) ->
+     | Ast.Int_lit _, Type.Constr(Type.Num(Type.Signed, Type.Sz32)) ->
         return StringMap.empty
      | Ast.Str_lit _, Type.Constr Type.Cstr -> return StringMap.empty
      | Ast.Unit_lit, Type.Unit -> return StringMap.empty
@@ -307,10 +307,8 @@ let rec infer subst = function
      | _ -> throw (Unimplemented "Infer apply expr")
      end
   | Ast.Constr_expr _ -> throw (Unimplemented "Cannot infer data constructor")
-  | Ast.Lit_expr (Ast.Int_lit _) -> throw (Unimplemented "Int lit")
-  | Ast.Lit_expr (Ast.Int32_lit n) ->
-     let ty = Type.(Constr (Num(Signed, Sz32))) in
-     return (Typed.Int_expr(ty, n), ty, subst)
+  | Ast.Lit_expr (Ast.Int_lit _) ->
+     throw (Unimplemented "Cannot infer int lit")
   | Ast.Lit_expr (Ast.Str_lit s) ->
      return (Typed.Str_expr s, Type.Constr Type.Cstr, subst)
   | Ast.Lit_expr Ast.Unit_lit ->
@@ -368,6 +366,12 @@ and check subst expr ty = match expr, ty with
      | Error _ -> throw (Unimplemented "Datacon unify error")
      | Ok _ -> return (Typed.Constr_expr(ty, idx, args), subst)     
      end
+  | Ast.Lit_expr (Ast.Int_lit n), Type.Constr (Num(_, _)) ->
+     return (Typed.Int_expr(ty, n), subst)
+  | Ast.Seq_expr(e1, e2), ty ->
+     let* typed_e1, subst = check subst e1.Ast.annot_item Type.Unit in
+     let+ typed_e2, subst = check subst e2.Ast.annot_item ty in
+     (Typed.Seq_expr(typed_e1, typed_e2), subst)
   | expr, ty ->
      let* typed_expr, ty', subst = infer subst expr in
      match Type.unify (Type.subst subst ty) ty' with
@@ -452,7 +456,7 @@ let rec filter_int pat_vars acc var = function
   | ((var', pat) as c) :: constraints when Var.equal var var' ->
      let rec normalize pat_vars' pat =
        match pat.Ast.annot_item with
-       | Ast.Lit_pat(Ast.Int32_lit n) ->
+       | Ast.Lit_pat(Ast.Int_lit n) ->
           return (Some n, pat_vars', List.rev_append acc constraints)
        | Var_pat _ ->
           (* Return the original pat-vars *)

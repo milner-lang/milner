@@ -20,7 +20,6 @@ type adt = {
 
 type literal =
   | Int_lit of int
-  | Int32_lit of int
   | Str_lit of string
   | Unit_lit
 

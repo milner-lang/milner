@@ -14,11 +14,11 @@ val nil : fun() -> ()
 fun nil() = ()
 
 val str_fun : fun(Int32) -> Cstring
-fun str_fun(0i32) = "foofoo"
-  | (1i32) = "barbar"
-  | (2i32) = "bazbaz"
-  | (3i32) = "empty"
+fun str_fun(0) = "foofoo"
+  | (1) = "barbar"
+  | (2) = "bazbaz"
+  | (3) = "empty"
   | (n) = ""
 
 val main : fun() -> Int32
-fun main() = 0i32
+fun main() = 0
