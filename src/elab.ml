@@ -34,7 +34,7 @@ let string_of_error = function
   | Unimplemented s -> "Unimplemented " ^ s
 
 type state = {
-    tycons : (string, Type.tycon * Type.t) Hashtbl.t;
+    tycons : (string, Type.head * Type.t) Hashtbl.t;
     funcs : (string, Type.forall) Hashtbl.t;
     metavar_gen : int;
     var_gen : Typed.ns Var.gen;
@@ -152,14 +152,14 @@ let rec ty_infer tvars = function
   | Ast.Ty_app(f, x) ->
      let* pair = ty_infer tvars f.Ast.annot_item in
      begin match pair with
-     | Type.Constr(Adt(adt, spine)), Type.KArrow(dom, cod) ->
+     | Type.Neu(Adt(adt), spine), Type.KArrow(dom, cod) ->
         let+ x = ty_check tvars x.Ast.annot_item dom in
-        Type.Constr(Adt(adt, x :: spine)), cod
+        Type.Neu(Adt(adt), x :: spine), cod
      | _ -> throw (Unimplemented "Ty infer app")
      end
   | Ast.Ty_con tycon ->
      let+ ty, kind = find_tcon tycon in
-     Type.Constr ty, kind
+     Type.Neu(ty, []), kind
   | Ast.Arrow(dom, codom) ->
      let+ dom = mapM (fun x -> ty_check tvars x.Ast.annot_item Type.Univ) dom
      and+ codom, _ = ty_infer tvars codom.Ast.annot_item in
@@ -224,7 +224,7 @@ let read_adt adt =
         let datacon =
           { Type.datacon_name = name
           ; datacon_inputs = tys
-          ; datacon_output = Type.Constr(Type.Adt(adt', params)) }
+          ; datacon_output = Type.Neu(Type.Adt(adt'), params) }
         in
         constrs.(i) <- datacon;
         Hashtbl.add datacons name i;
@@ -232,7 +232,7 @@ let read_adt adt =
       0 adt.Ast.adt_constrs
   in
   let+ () =
-    declare_tycon adt.Ast.adt_name (Type.Adt(adt', [])) adt'.Type.adt_kind
+    declare_tycon adt.Ast.adt_name (Type.Adt adt') adt'.Type.adt_kind
   in
   adt'
 
@@ -261,7 +261,7 @@ let rec check_pat pat ty =
        return (StringMap.add name var map)
   | Ast.Constr_pat(name, pats) ->
      begin match ty with
-     | Type.Constr(Type.Adt(adt, tyargs)) ->
+     | Type.Neu(Type.Adt adt, tyargs) ->
         let idx = Hashtbl.find adt.Type.adt_constr_names name in
         let datacon = adt.Type.adt_constrs.(idx) in
         let tyargs = Array.of_list (List.rev tyargs) in
@@ -276,9 +276,9 @@ let rec check_pat pat ty =
   | Ast.Wild_pat -> return StringMap.empty
   | Ast.Lit_pat lit ->
      match lit, ty with
-     | Ast.Int_lit _, Type.Constr(Type.Num(Type.Signed, Type.Sz32)) ->
+     | Ast.Int_lit _, Type.Neu(Type.Num(Type.Signed, Type.Sz32), []) ->
         return StringMap.empty
-     | Ast.Str_lit _, Type.Constr Type.Cstr -> return StringMap.empty
+     | Ast.Str_lit _, Type.Neu(Type.Cstr, []) -> return StringMap.empty
      | Ast.Unit_lit, Type.Unit -> return StringMap.empty
      | _, _ -> throw (Unimplemented "Checking lit pat")
 
@@ -322,7 +322,7 @@ let rec infer subst = function
   | Ast.Lit_expr (Ast.Int_lit _) ->
      throw (Unimplemented "Cannot infer int lit")
   | Ast.Lit_expr (Ast.Str_lit s) ->
-     return (Typed.Str_expr s, Type.Constr Type.Cstr, subst)
+     return (Typed.Str_expr s, Type.Neu(Type.Cstr, []), subst)
   | Ast.Lit_expr Ast.Unit_lit ->
      return (Typed.Unit_expr, Type.Unit, subst)
   | Ast.Seq_expr(e1, e2) ->
@@ -356,7 +356,7 @@ let rec infer subst = function
      | Local _ -> throw (Unimplemented "Local with generics")
 
 and check subst expr ty = match expr, ty with
-  | Ast.Constr_expr(name, args), Type.Constr(Type.Adt(adt, tyargs)) ->
+  | Ast.Constr_expr(name, args), Type.Neu(Type.Adt adt, tyargs) ->
      let idx = Hashtbl.find adt.Type.adt_constr_names name in
      let datacon = adt.Type.adt_constrs.(idx) in
      let tyargs = Array.of_list (List.rev tyargs) in
@@ -376,7 +376,7 @@ and check subst expr ty = match expr, ty with
      let ty' = Type.inst tyargs datacon.Type.datacon_output in
      let+ _ = unify ty ty' in
      (Typed.Constr_expr(ty, idx, args), subst)
-  | Ast.Lit_expr (Ast.Int_lit n), Type.Constr (Num(_, _)) ->
+  | Ast.Lit_expr (Ast.Int_lit n), Type.Neu (Num(_, _), []) ->
      return (Typed.Int_expr(ty, n), subst)
   | Ast.Seq_expr(e1, e2), ty ->
      let* typed_e1, subst = check subst e1.Ast.annot_item Type.Unit in
@@ -484,7 +484,7 @@ let rec elab_clauses clauses dom codom = match clauses with
      | Irrefut pat_vars -> return (Typed.Leaf(clause.rhs, pat_vars))
      | Refut var ->
         match Var.ty var with
-        | Type.Constr (Type.Adt(adt, tyargs)) ->
+        | Type.Neu (Type.Adt adt, tyargs) ->
            let tyargs = Array.of_list (List.rev tyargs) in
            let+ cases =
              Array.fold_right (fun datacon acc ->
@@ -494,10 +494,10 @@ let rec elab_clauses clauses dom codom = match clauses with
                ) adt.Type.adt_constrs (return [])
            in
            Typed.Split(adt, var, cases)
-        | Type.Constr Type.Cstr ->
+        | Type.Neu(Type.Cstr, []) ->
            let+ strmap, otherwise = refine_str var clauses dom codom in
            Typed.Split_str(var, strmap, otherwise)
-        | Type.Constr (Type.Num(Type.Signed, Type.Sz32)) ->
+        | Type.Neu(Type.Num(Type.Signed, Type.Sz32), []) ->
            let+ intmap, otherwise = refine_int var clauses dom codom in
            Typed.Split_int(var, intmap, otherwise)
         | Type.Rigid _ -> throw (Unimplemented "Rigid")

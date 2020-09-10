@@ -80,12 +80,12 @@ let rec erase_types = function
      Option.map (fun tys -> Some llty :: tys) (erase_types tys)
 
 let rec mangle_ty global type_args = function
-  | Type.Constr (Type.Adt(adt, tyargs)) ->
+  | Type.Neu(Type.Adt adt, tyargs) ->
      let name = mangle_datatype global type_args adt tyargs in
      ignore (compile_datatype global type_args adt tyargs);
      name
-  | Type.Constr Type.Cstr -> "cstr"
-  | Type.Constr (Type.Num(_, sz)) ->
+  | Type.Neu(Type.Cstr, _) -> "cstr"
+  | Type.Neu(Type.Num(_, sz), _) ->
      (* Ints and nats share the same machine representation, so instantiations
         for ints and nats can share the same code *)
      begin match sz with
@@ -197,28 +197,28 @@ and transl_size llctx = function
   | Type.Sz64 -> Llvm.i64_type llctx
 
 (** The unit type does not translate into a machine type. *)
-and transl_ty global ty_args ty : transl_ty =
+and transl_ty global type_args ty : transl_ty =
   let llctx = global.llctx in
   match ty with
-  | Type.Constr (Type.Adt(_adt, _)) ->
-     let mangled = mangle_ty global [||] ty in
+  | Type.Neu (Type.Adt adt, adt_args) ->
+     let mangled = mangle_datatype global type_args adt adt_args in
      begin match Hashtbl.find global.types mangled with
      | Uninhabited -> Uninhabited_ty
      | Zero -> Zero_ty
      | Product(_, ty) -> Ll_ty ty
      | Basic_sum(ty, _) -> Ll_ty ty
      end
-  | Type.Constr Type.Cstr -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
-  | Type.Constr (Type.Num(_, sz)) -> Ll_ty (transl_size llctx sz)
+  | Type.Neu(Type.Cstr, _) -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
+  | Type.Neu(Type.Num(_, sz), _) -> Ll_ty (transl_size llctx sz)
   | Type.Fun fun_ty ->
-     begin match transl_fun_ty global ty_args fun_ty with
+     begin match transl_fun_ty global type_args fun_ty with
      | None -> Uninhabited_ty
      | Some (params, ret) ->
         let params = params |> remove_nones |> Array.of_list in
         Ll_ty (Llvm.function_type ret params)
      end
   | Type.Pointer _ -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
-  | Type.Rigid v -> transl_ty global ty_args ty_args.(v)
+  | Type.Rigid v -> transl_ty global type_args type_args.(v)
   | Type.Var _ -> failwith "Unsolved type variable!?"
   | Type.Unit -> Zero_ty
   | Type.Univ -> Zero_ty

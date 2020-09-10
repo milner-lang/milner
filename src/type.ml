@@ -5,13 +5,13 @@ module Subst = Map.Make(Int)
 type size = Sz8 | Sz16 | Sz32 | Sz64
 type sign = Signed | Unsigned
 
-type tycon =
+type head =
   | Cstr
   | Num of sign * size
-  | Adt of adt * t list
+  | Adt of adt
 
 and t =
-  | Constr of tycon
+  | Neu of head * t list
   | Fun of fun_ty
   | Pointer of t
   | KArrow of t * t
@@ -42,8 +42,7 @@ and datacon = {
 type forall = Forall of t list * t
 
 let rec subst s = function
-  | Constr (Adt(adt, spine)) -> Constr(Adt(adt, List.map (subst s) spine))
-  | Constr head -> Constr head
+  | Neu(head, spine) -> Neu(head, List.map (subst s) spine)
   | Fun fn -> Fun { dom = List.map (subst s) fn.dom; codom = subst s fn.codom }
   | KArrow(t1, t2) -> KArrow(subst s t1, subst s t2)
   | Pointer ty -> Pointer (subst s ty)
@@ -60,18 +59,15 @@ let union s s' =
 
 type fun_error = Too_many | Too_few | Unify of (t * t)
 
+let unify_head lhs rhs = match lhs, rhs with
+  | Adt ladt, Adt radt when ladt.adt_name = radt.adt_name -> Ok ()
+  | Cstr, Cstr -> Ok ()
+  | Num(a, b), Num(c, d) when a = c && b = d -> Ok ()
+  | _, _ -> Error (Neu(lhs, []), Neu(rhs, []))
+
 let rec unify lhs rhs = match lhs, rhs with
-  | Constr (Adt(adt, spine)), Constr (Adt(adt', spine')) ->
-     if adt.adt_name = adt'.adt_name then
-       unify_many Subst.empty spine spine'
-     else
-       Error(lhs, rhs)
-  | Constr Cstr, Constr Cstr -> Ok Subst.empty
-  | Constr (Num(a, b)), Constr (Num(c, d)) ->
-     if a = c && b = d then
-       Ok Subst.empty
-     else
-       Error (lhs, rhs)
+  | Neu (head, spine), Neu (head', spine') ->
+     unify_neu head spine head' spine'
   | Fun lhs', Fun rhs' ->
      begin match unify_fun lhs' rhs' with
      | Ok s -> Ok s
@@ -87,14 +83,19 @@ let rec unify lhs rhs = match lhs, rhs with
   | Var id, ty | ty, Var id -> Ok (Subst.singleton id ty)
   | _, _ -> Error (lhs, rhs)
 
-and unify_many subst lspine rspine = match lspine, rspine with
-  | [], [] -> Ok subst
-  | [], _ :: _ -> failwith "Unreachable"
-  | _ :: _, [] -> failwith "Unreachable"
-  | larg :: lspine, rarg :: rspine ->
-     match unify larg rarg with
+and unify_neu head spine head' spine' =
+  match spine, spine' with
+  | [], [] ->
+     begin match unify_head head head' with
+     | Ok () -> Ok Subst.empty
      | Error e -> Error e
-     | Ok subst' ->  unify_many (union subst subst') lspine rspine
+     end
+  | ty :: spine, ty' :: spine' ->
+     begin match unify ty ty' with
+     | Ok _ -> unify_neu head spine head' spine'
+     | Error e -> Error e
+     end
+  | _, _ -> Error (Neu(head, spine), Neu(head', spine'))
 
 and unify_fun lhs rhs =
   let rec loop s lhs rhs = match lhs, rhs with
@@ -114,9 +115,7 @@ and unify_fun lhs rhs =
      | Ok s -> Ok s
 
 let rec inst tyargs = function
-  | Constr (Adt(adt, spine)) -> Constr (Adt(adt, List.map (inst tyargs) spine))
-  | Constr Cstr -> Constr Cstr
-  | Constr (Num(a, b)) -> Constr (Num(a, b))
+  | Neu(head, spine) -> Neu(head, List.map (inst tyargs) spine)
   | Fun fun_ty ->
      Fun
        { dom = List.map (inst tyargs) fun_ty.dom
