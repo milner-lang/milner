@@ -4,25 +4,33 @@ module StringMap = Map.Make(String)
 module Symtable = ScopedMap.Make(String)
 
 type error =
+  | Expected_function_type
   | Incomplete_match
   | Not_enough_arguments
   | Not_enough_patterns
+  | Not_enough_typeargs
   | Redefined of string
   | Too_many_arguments
   | Too_many_patterns
+  | Too_many_typeargs
   | Undefined of string
   | Undefined_tvar of string
+  | Unify of Type.t * Type.t * Type.t * Type.t
   | Unimplemented of string
 
 let string_of_error = function
+  | Expected_function_type -> "Expected a function type"
   | Incomplete_match -> "Incomplete match"
   | Not_enough_arguments -> "Not enough arguments"
   | Not_enough_patterns -> "Not enough patterns"
+  | Not_enough_typeargs -> "Not enough typeargs"
   | Redefined s -> "Redefined " ^ s
   | Too_many_arguments -> "Too manu arguments"
   | Too_many_patterns -> "Too many patterns"
+  | Too_many_typeargs -> "Too many typeargs"
   | Undefined s -> "Undefined " ^ s
   | Undefined_tvar s -> "Undefined type variable " ^ s
+  | Unify _ -> "Unify"
   | Unimplemented s -> "Unimplemented " ^ s
 
 type state = {
@@ -132,6 +140,11 @@ let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
   (Ok { data = var }, { s with var_gen })
 
+let unify ty ty' =
+  match Type.unify ty ty' with
+  | Ok s -> return s
+  | Error (lhs, rhs) -> throw (Unify(lhs, rhs, ty, ty'))
+
 (** Infer the kind of a type. *)
 let rec ty_infer tvars = function
   | Ast.Unit -> return (Type.Unit, Type.Univ)
@@ -158,9 +171,8 @@ let rec ty_infer tvars = function
 
 and ty_check tvars ast_ty kind =
   let* ty, kind' = ty_infer tvars ast_ty in
-  match Type.unify kind' kind with
-  | Error _ -> throw (Unimplemented "Unify error")
-  | Ok _ -> return ty
+  let+ _ = unify kind' kind in
+  ty
 
 let read_ty_scheme tvars ty =
   let* _, tvar_map, kinds =
@@ -304,7 +316,7 @@ let rec infer subst = function
           | _ :: _, [] -> throw Too_many_arguments
           | [], _ :: _ -> throw Not_enough_arguments
         in loop subst [] args dom
-     | _ -> throw (Unimplemented "Infer apply expr")
+     | _ -> throw Expected_function_type
      end
   | Ast.Constr_expr _ -> throw (Unimplemented "Cannot infer data constructor")
   | Ast.Lit_expr (Ast.Int_lit _) ->
@@ -335,8 +347,8 @@ let rec infer subst = function
              let+ ty = ty_check StringMap.empty ty.Ast.annot_item kind
              and+ rest = loop (tys, kinds) in
              ty :: rest
-          | [], _ :: _ -> throw (Unimplemented "Not enough tyargs")
-          | _ :: _, [] -> throw (Unimplemented "Too many tyargs")
+          | [], _ :: _ -> throw Not_enough_typeargs
+          | _ :: _, [] -> throw Too_many_typeargs
         in
         let* tyargs = loop (tyargs, kinds) in
         let tyargs = Array.of_list tyargs in
@@ -362,10 +374,8 @@ and check subst expr ty = match expr, ty with
        loop subst [] args datacon.Type.datacon_inputs
      in
      let ty' = Type.inst tyargs datacon.Type.datacon_output in
-     begin match Type.unify ty ty' with
-     | Error _ -> throw (Unimplemented "Datacon unify error")
-     | Ok _ -> return (Typed.Constr_expr(ty, idx, args), subst)     
-     end
+     let+ _ = unify ty ty' in
+     (Typed.Constr_expr(ty, idx, args), subst)
   | Ast.Lit_expr (Ast.Int_lit n), Type.Constr (Num(_, _)) ->
      return (Typed.Int_expr(ty, n), subst)
   | Ast.Seq_expr(e1, e2), ty ->
@@ -374,11 +384,8 @@ and check subst expr ty = match expr, ty with
      (Typed.Seq_expr(typed_e1, typed_e2), subst)
   | expr, ty ->
      let* typed_expr, ty', subst = infer subst expr in
-     match Type.unify (Type.subst subst ty) ty' with
-     | Error e -> throw (Unimplemented (e ^ "unify check"))
-     | Ok subst' ->
-        return
-          (typed_expr, Type.Subst.union (fun _ a _ -> Some a) subst subst')
+     let+ subst' = unify (Type.subst subst ty) ty' in
+     (typed_expr, Type.Subst.union (fun _ a _ -> Some a) subst subst')
 
 type constrain = Typed.ns Var.t * Ast.pat Ast.annot
 
@@ -624,7 +631,7 @@ let elab_program prog =
            | Some (Type.Forall(kinds, Type.Fun ty)) ->
               let+ fun_def = check_fun fun_def kinds ty in
               Typed.Fun fun_def :: decls
-           | Some _ -> throw (Unimplemented "Not the function type")
+           | Some _ -> throw Expected_function_type
            end
         | Ast.Adt adt ->
            let+ _ = read_adt adt in

@@ -55,40 +55,63 @@ let rec subst s = function
      | Some ty -> ty
      | None -> Var id
 
+let union s s' =
+  Subst.union (fun _ a _ -> Some a) s s'
+
+type fun_error = Too_many | Too_few | Unify of (t * t)
+
 let rec unify lhs rhs = match lhs, rhs with
-  | Constr (Adt(adt, _spine)), Constr (Adt(adt', _spine')) ->
+  | Constr (Adt(adt, spine)), Constr (Adt(adt', spine')) ->
      if adt.adt_name = adt'.adt_name then
-       Ok Subst.empty
+       unify_many Subst.empty spine spine'
      else
-       Error "Unification fail"
+       Error(lhs, rhs)
   | Constr Cstr, Constr Cstr -> Ok Subst.empty
   | Constr (Num(a, b)), Constr (Num(c, d)) ->
      if a = c && b = d then
        Ok Subst.empty
      else
-       Error "Unification fail"
-  | Fun lhs, Fun rhs -> unify_fun lhs rhs
+       Error (lhs, rhs)
+  | Fun lhs', Fun rhs' ->
+     begin match unify_fun lhs' rhs' with
+     | Ok s -> Ok s
+     | Error Too_many -> Error (lhs, rhs)
+     | Error Too_few -> Error (lhs, rhs)
+     | Error (Unify e) -> Error e
+     end
   | Pointer lhs, Pointer rhs -> unify lhs rhs
   | Unit, Unit -> Ok Subst.empty
   | Univ, Univ -> Ok Subst.empty
   | Rigid id, Rigid id' when id = id' -> Ok Subst.empty
   | Var id, Var id' when id = id' -> Ok Subst.empty
   | Var id, ty | ty, Var id -> Ok (Subst.singleton id ty)
-  | _, _ -> Error "Unification fail"
+  | _, _ -> Error (lhs, rhs)
+
+and unify_many subst lspine rspine = match lspine, rspine with
+  | [], [] -> Ok subst
+  | [], _ :: _ -> failwith "Unreachable"
+  | _ :: _, [] -> failwith "Unreachable"
+  | larg :: lspine, rarg :: rspine ->
+     match unify larg rarg with
+     | Error e -> Error e
+     | Ok subst' ->  unify_many (union subst subst') lspine rspine
 
 and unify_fun lhs rhs =
   let rec loop s lhs rhs = match lhs, rhs with
     | [], [] -> Ok s
-    | [], _ :: _ -> Error "Too many"
-    | _ :: _, [] -> Error "Too few"
+    | [], _ :: _ -> Error Too_many
+    | _ :: _, [] -> Error Too_few
     | x :: xs, y :: ys ->
        match unify (subst s x) (subst s y) with
        | Ok s' -> loop (Subst.union (fun _ a _ -> Some a) s s') xs ys
-       | Error e -> Error e
+       | Error e -> Error (Unify e)
   in
   match loop Subst.empty lhs.dom rhs.dom with
-  | Ok s -> unify (subst s lhs.codom) (subst s rhs.codom)
   | Error e -> Error e
+  | Ok s ->
+     match unify (subst s lhs.codom) (subst s rhs.codom) with
+     | Error e -> Error (Unify e)
+     | Ok s -> Ok s
 
 let rec inst tyargs = function
   | Constr (Adt(adt, spine)) -> Constr (Adt(adt, List.map (inst tyargs) spine))
