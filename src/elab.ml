@@ -3,6 +3,13 @@ module IntMap = Map.Make(Int)
 module StringMap = Map.Make(String)
 module Symtable = ScopedMap.Make(String)
 
+type type_mismatch = {
+    actual_mismatch : Type.t;
+    expected_mismatch : Type.t;
+    actual : Type.t;
+    expected : Type.t;
+  }
+
 type error =
   | Expected_function_type
   | Incomplete_match
@@ -15,7 +22,7 @@ type error =
   | Too_many_typeargs
   | Undefined of string
   | Undefined_tvar of string
-  | Unify of Type.t * Type.t * Type.t * Type.t
+  | Unify of type_mismatch
   | Unimplemented of string
 
 let string_of_error = function
@@ -30,7 +37,11 @@ let string_of_error = function
   | Too_many_typeargs -> "Too many typeargs"
   | Undefined s -> "Undefined " ^ s
   | Undefined_tvar s -> "Undefined type variable " ^ s
-  | Unify _ -> "Unify"
+  | Unify { actual_mismatch; expected_mismatch; expected; actual } ->
+     "Cannot unify " ^ Pretty.string_of_type actual_mismatch ^ " and "
+     ^ Pretty.string_of_type expected_mismatch
+     ^ "\nExpected type: " ^ Pretty.string_of_type expected
+     ^ "\nActual type: " ^ Pretty.string_of_type actual
   | Unimplemented s -> "Unimplemented " ^ s
 
 type state = {
@@ -140,10 +151,16 @@ let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
   (Ok { data = var }, { s with var_gen })
 
-let unify ty ty' =
-  match Type.unify ty ty' with
+let unify ~expected ~actual =
+  match Type.unify expected actual with
   | Ok s -> return s
-  | Error (lhs, rhs) -> throw (Unify(lhs, rhs, ty, ty'))
+  | Error (lhs, rhs) ->
+     throw
+       (Unify
+          { expected_mismatch = lhs
+          ; actual_mismatch = rhs
+          ; expected
+          ; actual; })
 
 (** Infer the kind of a type. *)
 let rec ty_infer tvars = function
@@ -171,7 +188,7 @@ let rec ty_infer tvars = function
 
 and ty_check tvars ast_ty kind =
   let* ty, kind' = ty_infer tvars ast_ty in
-  let+ _ = unify kind' kind in
+  let+ _ = unify ~expected:kind' ~actual:kind in
   ty
 
 let read_ty_scheme tvars ty =
@@ -374,7 +391,7 @@ and check subst expr ty = match expr, ty with
        loop subst [] args datacon.Type.datacon_inputs
      in
      let ty' = Type.inst tyargs datacon.Type.datacon_output in
-     let+ _ = unify ty ty' in
+     let+ _ = unify ~expected:ty ~actual:ty' in
      (Typed.Constr_expr(ty, idx, args), subst)
   | Ast.Lit_expr (Ast.Int_lit n), Type.Neu (Num(_, _), []) ->
      return (Typed.Int_expr(ty, n), subst)
@@ -384,7 +401,7 @@ and check subst expr ty = match expr, ty with
      (Typed.Seq_expr(typed_e1, typed_e2), subst)
   | expr, ty ->
      let* typed_expr, ty', subst = infer subst expr in
-     let+ subst' = unify (Type.subst subst ty) ty' in
+     let+ subst' = unify ~expected:ty' ~actual:(Type.subst subst ty) in
      (typed_expr, Type.Subst.union (fun _ a _ -> Some a) subst subst')
 
 type constrain = Typed.ns Var.t * Ast.pat Ast.annot
