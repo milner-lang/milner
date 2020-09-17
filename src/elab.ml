@@ -3,47 +3,6 @@ module IntMap = Map.Make(Int)
 module StringMap = Map.Make(String)
 module Symtable = ScopedMap.Make(String)
 
-type type_mismatch = {
-    actual_mismatch : Type.t;
-    expected_mismatch : Type.t;
-    actual : Type.t;
-    expected : Type.t;
-  }
-
-type error =
-  | Expected_function_type
-  | Incomplete_match
-  | Not_enough_arguments
-  | Not_enough_patterns
-  | Not_enough_typeargs
-  | Redefined of string
-  | Too_many_arguments
-  | Too_many_patterns
-  | Too_many_typeargs
-  | Undefined of string
-  | Undefined_tvar of string
-  | Unify of type_mismatch
-  | Unimplemented of string
-
-let string_of_error = function
-  | Expected_function_type -> "Expected a function type"
-  | Incomplete_match -> "Incomplete match"
-  | Not_enough_arguments -> "Not enough arguments"
-  | Not_enough_patterns -> "Not enough patterns"
-  | Not_enough_typeargs -> "Not enough typeargs"
-  | Redefined s -> "Redefined " ^ s
-  | Too_many_arguments -> "Too manu arguments"
-  | Too_many_patterns -> "Too many patterns"
-  | Too_many_typeargs -> "Too many typeargs"
-  | Undefined s -> "Undefined " ^ s
-  | Undefined_tvar s -> "Undefined type variable " ^ s
-  | Unify { actual_mismatch; expected_mismatch; expected; actual } ->
-     "Cannot unify " ^ Pretty.string_of_type actual_mismatch ^ " and "
-     ^ Pretty.string_of_type expected_mismatch
-     ^ "\nExpected type: " ^ Pretty.string_of_type expected
-     ^ "\nActual type: " ^ Pretty.string_of_type actual
-  | Unimplemented s -> "Unimplemented " ^ s
-
 type state = {
     tycons : (string, Type.head * Type.t) Hashtbl.t;
     funcs : (string, Type.forall) Hashtbl.t;
@@ -56,7 +15,7 @@ type 'a payload = {
   }
 
 type 'a t =
-  Typed.ns Var.t Symtable.t -> state -> ('a payload, error) result * state
+  Typed.ns Var.t Symtable.t -> state -> ('a payload, Error.t) result * state
 
 let throw e _ s = (Error e, s)
 
@@ -136,7 +95,7 @@ let find name env s =
   | None ->
      match Hashtbl.find_opt s.funcs name with
      | Some ty -> (Ok { data = Global ty }, s)
-     | None -> (Error (Undefined name), s)
+     | None -> (Error (Error.Undefined name), s)
 
 let declare_tycon name tycon kind _ s =
   Hashtbl.add s.tycons name (tycon, kind);
@@ -144,7 +103,7 @@ let declare_tycon name tycon kind _ s =
 
 let find_tcon name _ s =
   match Hashtbl.find_opt s.tycons name with
-  | None -> (Error (Undefined name), s)
+  | None -> (Error (Error.Undefined name), s)
   | Some ty -> (Ok { data = ty }, s)
 
 let fresh_var ty _ s =
@@ -156,7 +115,7 @@ let unify ~expected ~actual =
   | Ok s -> return s
   | Error (lhs, rhs) ->
      throw
-       (Unify
+       (Error.Unify
           { expected_mismatch = lhs
           ; actual_mismatch = rhs
           ; expected
@@ -172,7 +131,7 @@ let rec ty_infer tvars = function
      | Type.Neu(Adt(adt), spine), Type.KArrow(dom, cod) ->
         let+ x = ty_check tvars x.Ast.annot_item dom in
         Type.Neu(Adt(adt), x :: spine), cod
-     | _ -> throw (Unimplemented "Ty infer app")
+     | _ -> throw (Error.Unimplemented "Ty infer app")
      end
   | Ast.Ty_con tycon ->
      let+ ty, kind = find_tcon tycon in
@@ -184,7 +143,7 @@ let rec ty_infer tvars = function
   | Ast.Ty_var name ->
      match StringMap.find_opt name tvars with
      | Some (v, kind) -> return (v, kind)
-     | None -> throw (Undefined_tvar name)
+     | None -> throw (Error.Undefined_tvar name)
 
 and ty_check tvars ast_ty kind =
   let* ty, kind' = ty_infer tvars ast_ty in
@@ -255,7 +214,7 @@ let read_adt adt =
 
 let decl_fun name ty _ s =
   if Hashtbl.mem s.funcs name then
-    (Error (Redefined name), s)
+    (Error (Error.Redefined name), s)
   else (
     Hashtbl.add s.funcs name ty;
     (Ok { data = () }, s)
@@ -273,7 +232,7 @@ let rec check_pat pat ty =
      Var.add_name var name;
      let* map = check_pat pat.Ast.annot_item ty in
      if StringMap.mem name map then
-       throw (Redefined name)
+       throw (Error.Redefined name)
      else
        return (StringMap.add name var map)
   | Ast.Constr_pat(name, pats) ->
@@ -284,7 +243,7 @@ let rec check_pat pat ty =
         let tyargs = Array.of_list (List.rev tyargs) in
         let tys = List.map (Type.inst tyargs) datacon.Type.datacon_inputs in
         check_pats pats tys
-     | _ -> throw (Unimplemented "")
+     | _ -> throw (Error.Unimplemented "")
      end
   | Ast.Var_pat name ->
      let+ var = fresh_var ty in
@@ -297,15 +256,15 @@ let rec check_pat pat ty =
         return StringMap.empty
      | Ast.Str_lit _, Type.Neu(Type.Cstr, []) -> return StringMap.empty
      | Ast.Unit_lit, Type.Unit -> return StringMap.empty
-     | _, _ -> throw (Unimplemented "Checking lit pat")
+     | _, _ -> throw (Error.Unimplemented "Checking lit pat")
 
 and check_pats pats tys =
   let rec tie acc = function
     | [], [] -> return (List.rev acc)
     | pat :: pats, ty :: tys ->
        tie ((pat, ty) :: acc) (pats, tys)
-    | _ :: _, [] -> throw Too_many_patterns
-    | [], _ :: _ -> throw Not_enough_patterns
+    | _ :: _, [] -> throw Error.Too_many_patterns
+    | [], _ :: _ -> throw Error.Not_enough_patterns
   in
   let* tied = tie [] (pats, tys) in
   fold_rightM (fun map (pat, ty) ->
@@ -313,7 +272,7 @@ and check_pats pats tys =
       let f s _ _ = raise (String s) in
       let* map' = check_pat pat.Ast.annot_item ty in
       try return (StringMap.union f map map') with
-      | String k -> throw (Redefined k)
+      | String k -> throw (Error.Redefined k)
     ) StringMap.empty tied
 
 let rec infer subst = function
@@ -330,14 +289,15 @@ let rec infer subst = function
           | arg :: args, ty :: dom ->
              let* typed_arg, subst = check subst arg.Ast.annot_item ty in
              loop subst (typed_arg :: typed_args) args dom
-          | _ :: _, [] -> throw Too_many_arguments
-          | [], _ :: _ -> throw Not_enough_arguments
+          | _ :: _, [] -> throw Error.Too_many_arguments
+          | [], _ :: _ -> throw Error.Not_enough_arguments
         in loop subst [] args dom
-     | _ -> throw Expected_function_type
+     | _ -> throw Error.Expected_function_type
      end
-  | Ast.Constr_expr _ -> throw (Unimplemented "Cannot infer data constructor")
+  | Ast.Constr_expr _ ->
+     throw (Error.Unimplemented "Cannot infer data constructor")
   | Ast.Lit_expr (Ast.Int_lit _) ->
-     throw (Unimplemented "Cannot infer int lit")
+     throw (Error.Unimplemented "Cannot infer int lit")
   | Ast.Lit_expr (Ast.Str_lit s) ->
      return (Typed.Str_expr s, Type.Neu(Type.Cstr, []), subst)
   | Ast.Lit_expr Ast.Unit_lit ->
@@ -351,7 +311,7 @@ let rec infer subst = function
      begin match var with
      | Global (Type.Forall([], ty)) ->
         return (Typed.Global_expr(name, [||]), ty, subst)
-     | Global (Type.Forall(_, _)) -> throw (Unimplemented "Global")
+     | Global (Type.Forall(_, _)) -> throw (Error.Unimplemented "Global")
      | Local var -> return (Typed.Var_expr var, Var.ty var, subst)
      end
   | Ast.Generic_expr(name, tyargs) ->
@@ -364,13 +324,13 @@ let rec infer subst = function
              let+ ty = ty_check StringMap.empty ty.Ast.annot_item kind
              and+ rest = loop (tys, kinds) in
              ty :: rest
-          | [], _ :: _ -> throw Not_enough_typeargs
-          | _ :: _, [] -> throw Too_many_typeargs
+          | [], _ :: _ -> throw Error.Not_enough_typeargs
+          | _ :: _, [] -> throw Error.Too_many_typeargs
         in
         let* tyargs = loop (tyargs, kinds) in
         let tyargs = Array.of_list tyargs in
         return (Typed.Global_expr(name, tyargs), Type.inst tyargs ty, subst)
-     | Local _ -> throw (Unimplemented "Local with generics")
+     | Local _ -> throw (Error.Unimplemented "Local with generics")
 
 and check subst expr ty = match expr, ty with
   | Ast.Constr_expr(name, args), Type.Neu(Type.Adt adt, tyargs) ->
@@ -385,8 +345,8 @@ and check subst expr ty = match expr, ty with
             let ty = Type.inst tyargs ty in
             let* typed_arg, subst = check subst arg.Ast.annot_item ty in
             loop subst (typed_arg :: typed_args) args tys
-         | _ :: _, [] -> throw Too_many_arguments
-         | [], _ :: _ -> throw Not_enough_arguments
+         | _ :: _, [] -> throw Error.Too_many_arguments
+         | [], _ :: _ -> throw Error.Not_enough_arguments
        in
        loop subst [] args datacon.Type.datacon_inputs
      in
@@ -430,8 +390,8 @@ let rec find_refut acc = function
 let rec tie acc vars pats = match vars, pats with
   | [], [] -> return (List.rev acc)
   | var :: vars, pat :: pats -> tie ((var, pat) :: acc) vars pats
-  | _ :: _, [] -> throw Not_enough_patterns
-  | [], _ :: _ -> throw Too_many_patterns
+  | _ :: _, [] -> throw Error.Not_enough_patterns
+  | [], _ :: _ -> throw Error.Too_many_patterns
 
 let rec filter pat_vars acc var vars datacon = function
   | [] -> return (Some (pat_vars, List.rev acc))
@@ -495,7 +455,7 @@ let rec filter_int pat_vars acc var = function
   | c :: constraints -> filter_int pat_vars (c :: acc) var constraints
 
 let rec elab_clauses clauses dom codom = match clauses with
-  | [] -> throw Incomplete_match
+  | [] -> throw Error.Incomplete_match
   | clause :: _ ->
      match find_refut clause.pat_vars clause.constraints with
      | Irrefut pat_vars -> return (Typed.Leaf(clause.rhs, pat_vars))
@@ -517,8 +477,8 @@ let rec elab_clauses clauses dom codom = match clauses with
         | Type.Neu(Type.Num(Type.Signed, Type.Sz32), []) ->
            let+ intmap, otherwise = refine_int var clauses dom codom in
            Typed.Split_int(var, intmap, otherwise)
-        | Type.Rigid _ -> throw (Unimplemented "Rigid")
-        | _ -> throw (Unimplemented "Not a pattern-matchable type")
+        | Type.Rigid _ -> throw (Error.Unimplemented "Rigid")
+        | _ -> throw (Error.Unimplemented "Not a pattern-matchable type")
 
 and refine datacon tyargs var clauses dom codom =
   let tys = List.map (Type.inst tyargs) datacon.Type.datacon_inputs in
@@ -609,8 +569,8 @@ let check_fun func fun_typarams Type.{ dom; codom } =
     fold_leftM (fun (i, clauses) clause ->
         let rec loop = function
           | [], [] -> return []
-          | _ :: _, [] -> throw Too_many_patterns
-          | [], _ :: _ -> throw Not_enough_patterns
+          | _ :: _, [] -> throw Error.Too_many_patterns
+          | [], _ :: _ -> throw Error.Not_enough_patterns
           | pat :: pats, var :: vars->
              let+ constraints = loop (pats, vars) in
              (var, pat) :: constraints
@@ -644,11 +604,11 @@ let elab_program prog =
         | Ast.Fun fun_def ->
            let* opt = get_fun fun_def.Ast.fun_name in
            begin match opt with
-           | None -> throw (Undefined fun_def.Ast.fun_name)
+           | None -> throw (Error.Undefined fun_def.Ast.fun_name)
            | Some (Type.Forall(kinds, Type.Fun ty)) ->
               let+ fun_def = check_fun fun_def kinds ty in
               Typed.Fun fun_def :: decls
-           | Some _ -> throw Expected_function_type
+           | Some _ -> throw Error.Expected_function_type
            end
         | Ast.Adt adt ->
            let+ _ = read_adt adt in

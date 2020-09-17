@@ -77,7 +77,7 @@ let compile triple reloc_model emit_llvm codegen_filetype out_file = function
          | Some name -> Ok name
          | None ->
             match Filename.chop_suffix_opt ~suffix:".ml" file with
-            | None -> Error "Unknown file extension."
+            | None -> Error (Error.Unimplemented "Unknown file extension.")
             | Some base ->
                let s = match emit_llvm, codegen_filetype with
                  | false, CodeGenFileType.ObjectFile -> ".o"
@@ -102,11 +102,12 @@ let compile triple reloc_model emit_llvm codegen_filetype out_file = function
          | Some mach ->
             TargetMachine.emit_to_file llmod codegen_filetype out_file mach;
             Ok ()
-         | None -> Error "Wasm target not supported."
+         | None -> Error (Error.Unimplemented "Wasm target not supported.")
      with
      | Ok () -> ()
      | Error e ->
-        output_string stderr (e ^ "\n");
+        Pretty.pp_elab_error Format.err_formatter e;
+        Format.pp_print_newline Format.err_formatter ();
         exit 2
 
 let cmd =

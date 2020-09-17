@@ -71,7 +71,7 @@ type state = {
     var_map : ns Var.t Vartbl.t;
   }
 
-type 'a t = state -> ('a * ns Var.t L.t, string) result * state
+type 'a t = state -> 'a * ns Var.t L.t * state
 
 let init_state () = {
     var_gen = Var.init_gen;
@@ -81,69 +81,53 @@ let init_state () = {
   }
 
 let run action =
-  let r, _ = action (init_state ()) in
-  match r with
-  | Error e -> Error e
-  | Ok (a, _) -> Ok a
+  let a, _, _ = action (init_state ()) in
+  a
 
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
 
-  let return a s = (Ok (a, L.empty), s)
+  let return a s = (a, L.empty, s)
 
   let ( let+ ) m f s =
-    let r, s = m s in
-    match r with
-    | Error e -> (Error e, s)
-    | Ok (a, l) -> (Ok (f a, l), s)
+    let a, l, s = m s in
+    (f a, l, s)
 
   let ( and+ ) m1 m2 s =
-    let r1, s = m1 s in
-    match r1 with
-    | Error e -> Error e, s
-    | Ok (a, l1) ->
-       let r2, s = m2 s in
-       match r2 with
-       | Error e -> Error e, s
-       | Ok (b, l2) -> Ok ((a, b), L.append l1 l2), s
+    let a, l1, s = m1 s in
+    let b, l2, s = m2 s in
+    ((a, b), L.append l1 l2, s)
 
   let ( and* ) = ( and+ )
 
   let ( let* ) m f s =
-    let r, s = m s in
-    match r with
-    | Error e -> Error e, s
-    | Ok (a, l1) ->
-       match f a s with
-       | Error e, s -> Error e, s
-       | Ok (b, l2), s -> Ok (b, L.append l1 l2), s
+    let a, l1, s = m s in
+    let b, l2, s = f a s in
+    (b, L.append l1 l2, s)
 end
 
 open Mon
 open Monad.List(Mon)
 
-let throw e s = (Error e, s)
-
 let fresh ty s =
   let v, var_gen = Var.fresh s.var_gen ty in
-  (Ok (v, L.singleton v), { s with var_gen })
+  (v, L.singleton v, { s with var_gen })
 
 (** Phi variables don't get allocated on the stack, so don't add them to the
     list of variables *)
 let fresh_phi ty s =
   let v, var_gen = Var.fresh s.var_gen ty in
-  (Ok (v, L.empty), { s with var_gen })
+  (v, L.empty, { s with var_gen })
 
 let fresh_reg s =
   let r = s.reg_gen in
-  Ok (r, L.empty), { s with reg_gen = r + 1 }
+  (r, L.empty, { s with reg_gen = r + 1 })
 
-let get_state s = (Ok (s, L.empty), s)
+let get_state s = (s, L.empty, s)
 
 let get_vars m s =
-  match m s with
-  | Error e, s -> Error e, s
-  | Ok (a, l), s -> Ok ((a, l), l), s
+  let a, l, s = m s in
+  ((a, l), l, s)
 
 let refresh var =
   let+ var' = fresh (Var.ty var)
@@ -159,11 +143,11 @@ let refresh_phi var =
 
 let find_var var s =
   match Vartbl.find_opt s.var_map var with
-  | Some aexp -> (Ok (aexp, L.empty), s)
+  | Some aexp -> (aexp, L.empty, s)
   | None -> failwith ("Unreachable: var not found " ^ Var.to_string var)
 
 let fresh_block s =
-  (Ok (s.block_gen, L.empty), { s with block_gen = s.block_gen + 1 })
+  (s.block_gen, L.empty, { s with block_gen = s.block_gen + 1 })
 
 let rec compile_case_tree rhs = function
   | Typed.Leaf(idx, params) ->

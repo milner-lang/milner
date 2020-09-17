@@ -1,9 +1,8 @@
 let ( let+ ) m f = Result.map f m
-let ( let* ) = Result.bind
 
 let compile layout prog =
-  let* prog = Elab.elab prog |> Result.map_error Elab.string_of_error in
-  let+ prog = Ir.compile prog in
+  let+ prog = Elab.elab prog in
+  let prog = Ir.compile prog in
   Llvmgen.emit_module layout (Llvm.global_context ()) "main" prog
 
 let read_file path =

@@ -1,76 +1,99 @@
-let parens level buf prec f =
+let parens level prec fmt f =
   if prec > level then (
-    Buffer.add_char buf '(';
+    Format.pp_print_char fmt '(';
     f ();
-    Buffer.add_char buf ')';
+    Format.pp_print_char fmt ')';
   ) else (
     f ()
   )
 
-let pp_head buf = function
+let pp_head fmt = function
   | Type.Cstr ->
-     Buffer.add_string buf "Cstring"
+     Format.pp_print_string fmt "Cstring"
   | Num(sign, size) ->
      begin match sign with
      | Type.Signed ->
-        Buffer.add_string buf "Int"
+        Format.pp_print_string fmt "Int"
      | Unsigned ->
-        Buffer.add_string buf "Nat"
+        Format.pp_print_string fmt "Nat"
      end;
      begin match size with
      | Type.Sz8 ->
-        Buffer.add_string buf "8"
+        Format.pp_print_string fmt "8"
      | Type.Sz16 ->
-        Buffer.add_string buf "16"
+        Format.pp_print_string fmt "16"
      | Type.Sz32 ->
-        Buffer.add_string buf "32"
+        Format.pp_print_string fmt "32"
      | Type.Sz64 ->
-        Buffer.add_string buf "64"
+        Format.pp_print_string fmt "64"
      end
   | Adt adt ->
-     Buffer.add_string buf adt.Type.adt_name
+     Format.pp_print_string fmt adt.Type.adt_name
 
-let rec pp_type buf prec = function
-  | Type.Neu(head, []) -> pp_head buf head
-  | Type.Neu(head, ty :: tys) ->
-     parens 0 buf prec (fun () ->
-         pp_head buf head;
-         Buffer.add_string buf " ";
-         pp_type buf prec ty;
-         List.iter (fun ty ->
-             Buffer.add_char buf ' ';
-             pp_type buf prec ty
-           ) tys
+let rec pp_type prec fmt = function
+  | Type.Neu(head, tys) ->
+     parens 0 prec fmt (fun () ->
+         pp_head fmt head;
+         Format.pp_print_list
+           ~pp_sep:(fun fmt () -> Format.pp_print_string fmt " ")
+           (pp_type prec)
+           fmt tys
        )
-  | Fun { dom = []; codom } ->
-     parens 0 buf prec (fun () ->
-         Buffer.add_string buf "fun() -> ";
-         pp_type buf prec codom
-       )
-  | Fun { dom = ty :: tys; codom } ->
-     parens 0 buf prec (fun () ->
-         Buffer.add_string buf "fun(";
-         pp_type buf prec ty;
-         List.iter (fun ty ->
-             Buffer.add_string buf ", ";
-             pp_type buf prec ty
-           ) tys;
-         Buffer.add_string buf ") -> ";
-         pp_type buf prec codom
+  | Fun { dom = tys; codom } ->
+     parens 0 prec fmt (fun () ->
+         Format.pp_print_string fmt "fun(";
+         Format.pp_print_list
+           ~pp_sep:(fun fmt () -> Format.pp_print_string fmt ", ")
+           (pp_type prec)
+           fmt tys;
+         Format.pp_print_string fmt ") -> ";
+         pp_type prec fmt codom
        )
   | Pointer _ -> ()
   | KArrow(dom, codom) ->
-     parens 0 buf prec (fun () ->
-         pp_type buf 1 dom;
-         Buffer.add_string buf " -> ";
-         pp_type buf 0 codom
+     parens 0 prec fmt (fun () ->
+         pp_type 1 fmt dom;
+         Format.pp_print_string fmt " -> ";
+         pp_type 0 fmt codom
        )
-  | Unit -> Buffer.add_string buf "()"
-  | Univ -> Buffer.add_string buf "type"
+  | Unit -> Format.pp_print_string fmt "()"
+  | Univ -> Format.pp_print_string fmt "type"
   | Rigid _ -> ()
   | Var _ -> ()
 
-let string_of_type ty =
-  let buf = Buffer.create 10 in
-  pp_type buf 0 ty;
-  Buffer.contents buf
+let pp_elab_error fmt = function
+  | Error.Expected_function_type ->
+     Format.pp_print_string fmt "Expected a function type"
+  | Incomplete_match ->
+     Format.pp_print_string fmt "Incomplete match"
+  | Not_enough_arguments ->
+     Format.pp_print_string fmt "Not enough arguments"
+  | Not_enough_patterns ->
+     Format.pp_print_string fmt "Not enough patterns"
+  | Not_enough_typeargs ->
+     Format.pp_print_string fmt "Not enough typeargs"
+  | Redefined s ->
+     Format.pp_print_string fmt ("Redefined " ^ s)
+  | Syntax ->
+     Format.pp_print_string fmt "Syntax error"
+  | Too_many_arguments ->
+     Format.pp_print_string fmt "Too many arguments"
+  | Too_many_patterns ->
+     Format.pp_print_string fmt "Too many patterns"
+  | Too_many_typeargs ->
+     Format.pp_print_string fmt "Too many typeargs"
+  | Undefined s ->
+     Format.pp_print_string fmt ("Undefined " ^ s)
+  | Undefined_tvar s ->
+     Format.pp_print_string fmt ("Undefined type variable " ^ s)
+  | Unify { actual_mismatch; expected_mismatch; expected; actual } ->
+     Format.pp_print_string fmt "Cannot unify ";
+     pp_type 0 fmt actual_mismatch;
+     Format.pp_print_string fmt " and ";
+     pp_type 0 fmt expected_mismatch;
+     Format.pp_print_string fmt "\nExpected type: ";
+     pp_type 0 fmt expected;
+     Format.pp_print_string fmt "\nActual type: ";
+     pp_type 0 fmt actual
+  | Unimplemented s ->
+     Format.pp_print_string fmt ("Unimplemented " ^ s)
