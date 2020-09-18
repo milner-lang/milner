@@ -147,7 +147,7 @@ let rec ty_infer tvars = function
 
 and ty_check tvars ast_ty kind =
   let* ty, kind' = ty_infer tvars ast_ty in
-  let+ _ = unify ~expected:kind' ~actual:kind in
+  let+ _ = unify ~expected:kind ~actual:kind' in
   ty
 
 let read_ty_scheme tvars ty =

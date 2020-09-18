@@ -8,35 +8,27 @@ let parens level prec fmt f =
   )
 
 let pp_head fmt = function
-  | Type.Cstr ->
-     Format.pp_print_string fmt "Cstring"
+  | Type.Cstr -> Format.pp_print_string fmt "Cstring"
   | Num(sign, size) ->
      begin match sign with
-     | Type.Signed ->
-        Format.pp_print_string fmt "Int"
-     | Unsigned ->
-        Format.pp_print_string fmt "Nat"
+     | Type.Signed -> Format.pp_print_string fmt "Int"
+     | Unsigned -> Format.pp_print_string fmt "Nat"
      end;
      begin match size with
-     | Type.Sz8 ->
-        Format.pp_print_string fmt "8"
-     | Type.Sz16 ->
-        Format.pp_print_string fmt "16"
-     | Type.Sz32 ->
-        Format.pp_print_string fmt "32"
-     | Type.Sz64 ->
-        Format.pp_print_string fmt "64"
+     | Type.Sz8 -> Format.pp_print_string fmt "8"
+     | Type.Sz16 -> Format.pp_print_string fmt "16"
+     | Type.Sz32 -> Format.pp_print_string fmt "32"
+     | Type.Sz64 -> Format.pp_print_string fmt "64"
      end
-  | Adt adt ->
-     Format.pp_print_string fmt adt.Type.adt_name
+  | Adt adt -> Format.pp_print_string fmt adt.Type.adt_name
 
 let rec pp_type prec fmt = function
   | Type.Neu(head, tys) ->
-     parens 0 prec fmt (fun () ->
+     parens 4 prec fmt (fun () ->
          pp_head fmt head;
          Format.pp_print_list
            ~pp_sep:(fun fmt () -> Format.pp_print_string fmt " ")
-           (pp_type prec)
+           (pp_type 0)
            fmt tys
        )
   | Fun { dom = tys; codom } ->
@@ -44,17 +36,17 @@ let rec pp_type prec fmt = function
          Format.pp_print_string fmt "fun(";
          Format.pp_print_list
            ~pp_sep:(fun fmt () -> Format.pp_print_string fmt ", ")
-           (pp_type prec)
+           (pp_type 0)
            fmt tys;
          Format.pp_print_string fmt ") -> ";
-         pp_type prec fmt codom
+         pp_type 0 fmt codom
        )
   | Pointer _ -> ()
   | KArrow(dom, codom) ->
-     parens 0 prec fmt (fun () ->
-         pp_type 1 fmt dom;
+     parens 2 prec fmt (fun () ->
+         pp_type 3 fmt dom;
          Format.pp_print_string fmt " -> ";
-         pp_type 0 fmt codom
+         pp_type 2 fmt codom
        )
   | Unit -> Format.pp_print_string fmt "()"
   | Univ -> Format.pp_print_string fmt "type"
