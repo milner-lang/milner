@@ -28,16 +28,14 @@ let rec pp_type prec fmt = function
          pp_head fmt head;
          Format.pp_print_list
            ~pp_sep:(fun fmt () -> Format.pp_print_string fmt " ")
-           (pp_type 0)
-           fmt tys
+           (pp_type 0) fmt tys
        )
-  | Fun { dom = tys; codom } ->
+  | Fun { dom; codom } ->
      parens 0 prec fmt (fun () ->
          Format.pp_print_string fmt "fun(";
          Format.pp_print_list
            ~pp_sep:(fun fmt () -> Format.pp_print_string fmt ", ")
-           (pp_type 0)
-           fmt tys;
+           (pp_type 0) fmt dom;
          Format.pp_print_string fmt ") -> ";
          pp_type 0 fmt codom
        )
@@ -53,6 +51,11 @@ let rec pp_type prec fmt = function
   | Rigid _ -> ()
   | Var _ -> ()
 
+let pp_with_vbox n fmt f =
+  Format.pp_open_vbox fmt n;
+  f fmt;
+  Format.pp_close_box fmt ()
+
 let pp_elab_error fmt = function
   | Error.Expected_function_type ->
      Format.pp_print_string fmt "Expected a function type"
@@ -65,7 +68,8 @@ let pp_elab_error fmt = function
   | Not_enough_typeargs ->
      Format.pp_print_string fmt "Not enough typeargs"
   | Redefined s ->
-     Format.pp_print_string fmt ("Redefined " ^ s)
+     Format.pp_print_string fmt "Redefined ";
+     Format.pp_print_string fmt s
   | Syntax ->
      Format.pp_print_string fmt "Syntax error"
   | Too_many_arguments ->
@@ -75,17 +79,24 @@ let pp_elab_error fmt = function
   | Too_many_typeargs ->
      Format.pp_print_string fmt "Too many typeargs"
   | Undefined s ->
-     Format.pp_print_string fmt ("Undefined " ^ s)
+     Format.pp_print_string fmt "Undefined ";
+     Format.pp_print_string fmt s
   | Undefined_tvar s ->
-     Format.pp_print_string fmt ("Undefined type variable " ^ s)
+     Format.pp_print_string fmt "Undefined type variable ";
+     Format.pp_print_string fmt s
   | Unify { actual_mismatch; expected_mismatch; expected; actual } ->
-     Format.pp_print_string fmt "Cannot unify ";
-     pp_type 0 fmt actual_mismatch;
-     Format.pp_print_string fmt " and ";
-     pp_type 0 fmt expected_mismatch;
-     Format.pp_print_string fmt "\nExpected type: ";
-     pp_type 0 fmt expected;
-     Format.pp_print_string fmt "\nActual type: ";
-     pp_type 0 fmt actual
+     pp_with_vbox 0 fmt (fun fmt ->
+         Format.pp_print_string fmt "Cannot unify ";
+         pp_type 0 fmt actual_mismatch;
+         Format.pp_print_string fmt " and ";
+         pp_type 0 fmt expected_mismatch;
+         Format.pp_print_break fmt 1 0;
+         Format.pp_print_string fmt "Expected type: ";
+         pp_type 0 fmt expected;
+         Format.pp_print_break fmt 1 0;
+         Format.pp_print_string fmt "Actual type: ";
+         pp_type 0 fmt actual
+       )
   | Unimplemented s ->
-     Format.pp_print_string fmt ("Unimplemented " ^ s)
+     Format.pp_print_string fmt "Unimplemented ";
+     Format.pp_print_string fmt s
