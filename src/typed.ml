@@ -9,13 +9,13 @@ type case_tree =
   | Split_int of ns Var.t * case_tree IntMap.t * case_tree
   | Split_str of ns Var.t * case_tree StringMap.t * case_tree
 
-type 'a pat = {
-    pat_node : 'a pat_node;
-    pat_vars : 'a
+type pat = {
+    pat_node : pat_node;
+    pat_vars : Type.ns Var.t list
   }
 
-and 'a pat_node =
-  | Constr_pat of Type.t * Type.adt * int * 'a pat list
+and pat_node =
+  | Constr_pat of Type.t * Type.adt * int * pat list
   | Int_pat of Type.t * int
   | Str_pat of string
   | Wild_pat
@@ -31,7 +31,7 @@ type expr =
   | Var_expr of ns Var.t
 
 type clause = {
-    clause_lhs : Type.ns Var.t list pat list;
+    clause_lhs : pat list;
     clause_vars : Type.ns Var.t StringMap.t;
     clause_rhs : expr;
   }
