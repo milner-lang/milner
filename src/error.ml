@@ -1,8 +1,8 @@
 type type_mismatch = {
-    actual_mismatch : Type.t;
-    expected_mismatch : Type.t;
-    actual : Type.t;
-    expected : Type.t;
+    actual_mismatch : Typing.ty;
+    expected_mismatch : Typing.ty;
+    actual : Typing.ty;
+    expected : Typing.ty;
   }
 
 type t =

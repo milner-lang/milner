@@ -2,7 +2,7 @@ module L = Dlist
 module IntMap = Map.Make(Int)
 module StrMap = Map.Make(String)
 module VarHash = struct
-  type t = Typed.ns Var.t
+  type t = Typing.ns Var.t
   let hash = Var.hash
   let equal x y = Var.compare x y = 0
 end
@@ -21,7 +21,7 @@ type reg = int
 
 type aexp =
   | Param of int
-  | Global of string * Type.t array
+  | Global of string * Typing.ty array
   | Int32 of int
   | String of string
   | Var of ns Var.t
@@ -31,7 +31,7 @@ type aexp =
 type cont = Block of int
 
 type expr =
-  | Switch of (Type.sign * Type.size) * aexp * cont IntMap.t * cont option
+  | Switch of (Typing.sign * Typing.size) * aexp * cont IntMap.t * cont option
   | Continue of cont * (ns Var.t * string) list
   | If of aexp * cont * cont
   | Let_aexp of ns Var.t * aexp * expr
@@ -50,14 +50,14 @@ type expr =
 
 type fun_def = {
     fun_name : string;
-    fun_ty : Type.fun_ty;
-    fun_poly : Type.t list;
+    fun_ty : Typing.fun_ty;
+    fun_poly : Typing.ty list;
     fun_vars : ns Var.t list;
     fun_body : expr;
   }
 
 type decl =
-  | External of string * Type.t
+  | External of string * Typing.ty
   | Fun of fun_def
 
 type program = {
@@ -150,7 +150,7 @@ let fresh_block s =
   (s.block_gen, L.empty, { s with block_gen = s.block_gen + 1 })
 
 let rec compile_case_tree rhs = function
-  | Typed.Leaf(idx, params) ->
+  | Typing.Leaf(idx, params) ->
      let action, _, _ = rhs.(idx) in
      let+ params =
        mapM (fun (var, name) ->
@@ -183,7 +183,7 @@ let rec compile_case_tree rhs = function
          ) (return (0, [], IntMap.empty)) cases
      in
      let expr =
-       let ty = (Type.Unsigned, Type.Sz8) in
+       let ty = (Typing.Unsigned, Typing.Sz8) in
        Let_get_tag(
            tag_reg, scrut,
            Switch(ty, Reg tag_reg, jumptable, None))
@@ -202,7 +202,7 @@ let rec compile_case_tree rhs = function
          ) cases (return ([], IntMap.empty))
      and+ default_id = fresh_block
      and+ default = compile_case_tree rhs otherwise in
-     let ty = (Type.Unsigned, Type.Sz32) in
+     let ty = (Typing.Unsigned, Typing.Sz32) in
      let expr =
        Let_cont(default_id, [], default,
                 Switch(ty, Var scrut, jumptable, Some (Block default_id)))
@@ -262,7 +262,7 @@ let rec compile_case_tree rhs = function
 
 let rec compile_expr exp k =
   match exp with
-  | Typed.Apply_expr(ty, f, args) ->
+  | Typing.Apply_expr(ty, f, args) ->
      compile_expr f (fun f ->
          List.fold_left (fun k arg args ->
              compile_expr arg (fun arg -> k (arg :: args))
@@ -272,7 +272,7 @@ let rec compile_expr exp k =
              Let_app(v, f, args, body)
            ) args []
        )
-  | Typed.Constr_expr(ty, idx, args) ->
+  | Typing.Constr_expr(ty, idx, args) ->
      List.fold_left (fun k arg args ->
          compile_expr arg (fun arg -> k (arg :: args))
        ) (fun args ->
@@ -280,22 +280,22 @@ let rec compile_expr exp k =
          let+ body = k (Var v) in
          Let_constr(v, idx, args, body)
        ) args []
-  | Typed.Global_expr(name, targs) -> k (Global(name, targs))
-  | Typed.Int_expr(_, n) -> k (Int32 n) (* Treat all ints as int32 for now *)
-  | Typed.Str_expr s -> k (String s)
-  | Typed.Seq_expr(e1, e2) ->
+  | Typing.Global_expr(name, targs) -> k (Global(name, targs))
+  | Typing.Int_expr(_, n) -> k (Int32 n) (* Treat all ints as int32 for now *)
+  | Typing.Str_expr s -> k (String s)
+  | Typing.Seq_expr(e1, e2) ->
      compile_expr e1 (fun _ -> compile_expr e2 (fun e2 -> k e2))
-  | Typed.Unit_expr -> k Unit
-  | Typed.Var_expr var ->
+  | Typing.Unit_expr -> k Unit
+  | Typing.Var_expr var ->
      let* var = find_var var in
      k (Var var)
 
 let compile_fun fun_def =
-  let n = List.length fun_def.Typed.fun_ty.dom in
+  let n = List.length fun_def.Typing.fun_ty.dom in
   let compile_body =
     (* Everything needs to be inside the action [compile_body] so that
        all generated variables can be collected by [get_vars] *)
-    let* params = mapM refresh fun_def.Typed.fun_params in
+    let* params = mapM refresh fun_def.fun_params in
     let* exprs =
       mapM (fun (cont_params, expr) ->
           let+ cont_id = fresh_block
@@ -306,10 +306,10 @@ let compile_fun fun_def =
                 (string, var) :: ls
               ) cont_params (return [])
           and+ expr = compile_expr expr (fun x -> return (Return x)) in
-          cont_id, cont_params, expr) fun_def.Typed.fun_clauses
+          cont_id, cont_params, expr) fun_def.fun_clauses
     in
     let block_mapping = Array.of_list exprs in
-    let+ entry = compile_case_tree block_mapping fun_def.Typed.fun_tree in
+    let+ entry = compile_case_tree block_mapping fun_def.fun_tree in
     let expr =
       List.fold_right (fun (cont_id, cont_params, expr) next ->
           Let_cont(cont_id, cont_params, expr, next)
@@ -322,20 +322,20 @@ let compile_fun fun_def =
     in body
   in
   let+ (body, vars) = get_vars compile_body in
-  { fun_name = fun_def.Typed.fun_name;
-    fun_ty = fun_def.Typed.fun_ty;
+  { fun_name = fun_def.fun_name;
+    fun_ty = fun_def.fun_ty;
     fun_poly = fun_def.fun_typarams;
     fun_vars = L.to_list vars;
     fun_body = body }
 
 let compile_decl = function
-  | Typed.External(name, ty) -> return (External(name, ty))
-  | Typed.Fun fun_def ->
+  | Typing.External(name, ty) -> return (External(name, ty))
+  | Typing.Fun fun_def ->
      let+ fun_def = compile_fun fun_def in
      Fun fun_def
 
 let compile_program program =
-  let+ decls = mapM compile_decl program.Typed.decls in
+  let+ decls = mapM compile_decl program.Typing.decls in
   { decls }
 
 let compile program = run (compile_program program)

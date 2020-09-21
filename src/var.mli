@@ -1,7 +1,7 @@
 (** [t] is intended to be indexed by a phantom type indicating its namespace. *)
-type _ t
+type 'a t = 'a Typing.var
 
-val ty : _ t -> Type.t
+val ty : _ t -> Typing.ty
 
 val add_name : _ t -> string -> unit
 
@@ -18,4 +18,4 @@ type _ gen
 
 val init_gen : _ gen
 
-val fresh : 'ns gen -> Type.t -> 'ns t * 'ns gen
+val fresh : 'ns gen -> Typing.ty -> 'ns t * 'ns gen

@@ -1,1 +1,1 @@
-val elab : Ast.program -> (Typed.program, Error.t) result
+val elab : Ast.program -> (Typing.program, Error.t) result
