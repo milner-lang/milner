@@ -14,8 +14,13 @@ type 'a payload = {
     data : 'a;
   }
 
+type var_kind =
+  | Local of Typing.ns Var.t
+  | Global of Typing.forall
+  | Type of Typing.ty * Typing.ty
+
 type 'a t =
-  Typing.ns Var.t Symtable.t -> state -> ('a payload, Error.t) result * state
+  var_kind Symtable.t -> state -> ('a payload, Error.t) result * state
 
 let throw e _ s = (Error e, s)
 
@@ -86,17 +91,10 @@ let in_scope scope m env s =
   | Error e -> (Error e, s)
   | Ok w -> (Ok w, s)
 
-type var_kind =
-  | Local of Typing.ns Var.t
-  | Global of Typing.forall
-
 let find name env s =
   match Symtable.find name env with
-  | Some var -> (Ok { data = Local var }, s)
-  | None ->
-     match Hashtbl.find_opt s.funcs name with
-     | Some ty -> (Ok { data = Global ty }, s)
-     | None -> (Error (Error.Undefined name), s)
+  | Some var -> (Ok { data = var }, s)
+  | None -> (Error (Error.Undefined name), s)
 
 let declare_tycon name tycon kind _ s =
   Hashtbl.add s.tycons name (tycon, kind);
@@ -120,34 +118,37 @@ let unify ~expected ~actual =
           { expected_mismatch = lhs
           ; actual_mismatch = rhs
           ; expected
-          ; actual; })
+          ; actual })
 
 (** Infer the kind of a type. *)
-let rec ty_infer tvars = function
+let rec ty_infer = function
   | Ast.Unit -> return (Typing.Unit, Typing.Univ)
   | Ast.Univ -> return (Typing.Univ, Typing.Univ)
   | Ast.Ty_app(f, x) ->
-     let* pair = ty_infer tvars f.Ast.annot_item in
+     let* pair = ty_infer f.Ast.annot_item in
      begin match pair with
      | Typing.Neu(Adt(adt), spine), Typing.KArrow(dom, cod) ->
-        let+ x = ty_check tvars x.Ast.annot_item dom in
+        let+ x = ty_check x.Ast.annot_item dom in
         Typing.Neu(Adt(adt), x :: spine), cod
      | _ -> throw (Error.Unimplemented "Ty infer app")
      end
-  | Ast.Ty_con tycon ->
+  | Ast.Constr_expr(tycon, []) ->
      let+ ty, kind = find_tcon tycon in
      Typing.Neu(ty, []), kind
   | Ast.Arrow(dom, codom) ->
-     let+ dom = mapM (fun x -> ty_check tvars x.Ast.annot_item Typing.Univ) dom
-     and+ codom, _ = ty_infer tvars codom.Ast.annot_item in
+     let+ dom = mapM (fun x -> ty_check x.Ast.annot_item Typing.Univ) dom
+     and+ codom, _ = ty_infer codom.Ast.annot_item in
      (Typing.Fun_ty { dom; codom }, Typing.Univ)
-  | Ast.Ty_var name ->
-     match StringMap.find_opt name tvars with
-     | Some (v, kind) -> return (v, kind)
-     | None -> throw (Error.Undefined_tvar name)
+  | Ast.Var_expr name ->
+     let* x = find name in
+     begin match x with
+     | Type (v, kind) -> return (v, kind)
+     | _ -> throw (Error.Unimplemented "")
+     end
+  | _ -> throw (Error.Unimplemented "Dependent types")
 
-and ty_check tvars ast_ty kind =
-  let* ty, kind' = ty_infer tvars ast_ty in
+and ty_check ast_ty kind =
+  let* ty, kind' = ty_infer ast_ty in
   let+ _ = unify ~expected:kind ~actual:kind' in
   ty
 
@@ -155,13 +156,13 @@ let read_ty_scheme tvars ty =
   let* _, tvar_map, kinds =
     fold_leftM
       (fun (i, tvars, kinds) (tvar, kind) ->
-        let+ kind = ty_check StringMap.empty kind.Ast.annot_item Typing.Univ in
+        let+ kind = ty_check kind.Ast.annot_item Typing.Univ in
         ( i + 1
-        , StringMap.add tvar (Typing.Rigid i, kind) tvars
+        , StringMap.add tvar (Type(Typing.Rigid i, kind)) tvars
         , Typing.Univ :: kinds ))
       (0, StringMap.empty, []) tvars
   in
-  let+ ty, _ = ty_infer tvar_map ty in
+  let+ ty, _ = in_scope tvar_map (ty_infer ty) in
   Typing.Forall(List.rev kinds, ty)
 
 let read_adt adt =
@@ -174,9 +175,12 @@ let read_adt adt =
   in
   let* param_count, params, kinds, tparams =
     fold_leftM (fun (i, params, kinds, map) (name, kind) ->
-        let+ kind = ty_check StringMap.empty kind.Ast.annot_item Typing.Univ in
+        let+ kind = ty_check kind.Ast.annot_item Typing.Univ in
         let ty = Typing.Rigid i in
-        i + 1, ty :: params, kind :: kinds, StringMap.add name (ty, kind) map)
+        ( i + 1
+        , ty :: params
+        , kind :: kinds
+        , StringMap.add name (Type(ty, kind)) map ))
       (0, [], [], StringMap.empty) adt.Ast.adt_params
   in
   let datacons = Hashtbl.create (Array.length constrs) in
@@ -196,7 +200,7 @@ let read_adt adt =
   let* _ =
     fold_leftM (fun i (name, tys) ->
         let+ tys =
-          mapM (fun ann -> ty_check tparams ann.Ast.annot_item Typing.Univ) tys
+          mapM (fun ann -> in_scope tparams (ty_check ann.Ast.annot_item Typing.Univ)) tys
         in
         let datacon =
           { Typing.datacon_name = name
@@ -316,15 +320,16 @@ let rec infer subst = function
         return (Typing.Global_expr(name, [||]), ty, subst)
      | Global (Typing.Forall(_, _)) -> throw (Error.Unimplemented "Global")
      | Local var -> return (Typing.Var_expr var, Var.ty var, subst)
+     | Type _ -> throw (Error.Unimplemented "First-class types")
      end
   | Ast.Generic_expr(name, tyargs) ->
      let* var = find name in
-     match var with
+     begin match var with
      | Global (Typing.Forall(kinds, ty)) ->
         let rec loop = function
           | [], [] -> return []
           | ty :: tys, kind :: kinds ->
-             let+ ty = ty_check StringMap.empty ty.Ast.annot_item kind
+             let+ ty = ty_check ty.Ast.annot_item kind
              and+ rest = loop (tys, kinds) in
              ty :: rest
           | [], _ :: _ -> throw Error.Not_enough_typeargs
@@ -334,6 +339,9 @@ let rec infer subst = function
         let tyargs = Array.of_list tyargs in
         return (Typing.Global_expr(name, tyargs), Typing.inst tyargs ty, subst)
      | Local _ -> throw (Error.Unimplemented "Local with generics")
+     | Type _ -> throw (Error.Unimplemented "First-class types")
+     end
+  | _ -> throw (Error.Unimplemented "First-class types")
 
 and check subst expr ty = match expr, ty with
   | Ast.Constr_expr(name, args), Typing.Neu(Typing.Adt adt, tyargs) ->
@@ -561,8 +569,9 @@ let check_fun func fun_typarams Typing.{ dom; codom } =
   let* rhs =
     mapM (fun clause ->
         let* map = check_pats clause.Ast.clause_lhs dom in
+        let map' = StringMap.map (fun x -> Local x) map in
         let+ expr, _ =
-          in_scope map
+          in_scope map'
             (check Typing.Subst.empty clause.Ast.clause_rhs.annot_item codom)
         in (map, expr)
       ) func.Ast.fun_clauses
@@ -594,30 +603,39 @@ let check_fun func fun_typarams Typing.{ dom; codom } =
 
 let elab_program prog =
   let+ decls =
-    fold_leftM (fun decls next ->
-        match next.Ast.annot_item with
-        | Ast.External(name, ty) ->
-           let* ty, _ = ty_infer StringMap.empty ty.Ast.annot_item in
-           let+ () = decl_fun name (Typing.Forall([], ty)) in
-           Typing.External(name, ty) :: decls
-        | Ast.Forward_decl(name, tvars, ty) ->
-           let* forall = read_ty_scheme tvars ty.Ast.annot_item in
-           let+ () = decl_fun name forall in
-           decls
-        | Ast.Fun fun_def ->
-           let* opt = get_fun fun_def.Ast.fun_name in
-           begin match opt with
-           | None -> throw (Error.Undefined fun_def.Ast.fun_name)
-           | Some (Typing.Forall(kinds, Typing.Fun_ty ty)) ->
-              let+ fun_def = check_fun fun_def kinds ty in
-              Typing.Fun fun_def :: decls
-           | Some _ -> throw Error.Expected_function_type
-           end
-        | Ast.Adt adt ->
-           let+ _ = read_adt adt in
-           decls
-      ) [] prog.Ast.decls
+    let rec loop = function
+      | [] -> return []
+      | next :: decls ->
+         match next.Ast.annot_item with
+         | Ast.External(name, ty) ->
+            let* ty, _ = ty_infer ty.Ast.annot_item in
+            let* () = decl_fun name (Typing.Forall([], ty)) in
+            let+ decls =
+              in_scope
+                (StringMap.singleton name (Global (Forall([], ty))))
+                (loop decls)
+            in
+            Typing.External(name, ty) :: decls
+         | Ast.Forward_decl(name, tvars, ty) ->
+            let* forall = read_ty_scheme tvars ty.Ast.annot_item in
+            let* () = decl_fun name forall in
+            in_scope (StringMap.singleton name (Global forall)) (loop decls)
+         | Ast.Fun fun_def ->
+            let* opt = get_fun fun_def.Ast.fun_name in
+            begin match opt with
+            | None -> throw (Error.Undefined fun_def.Ast.fun_name)
+            | Some (Typing.Forall(kinds, Typing.Fun_ty ty))->
+               let* fun_def = check_fun fun_def kinds ty in
+               let+ decls = loop decls in
+               Typing.Fun fun_def :: decls
+            | Some _ -> throw Error.Expected_function_type
+            end
+         | Ast.Adt adt ->
+            let* _ = read_adt adt in
+            loop decls
+    in
+    loop prog.Ast.decls
   in
-  Typing.{ decls = List.rev decls }
+  Typing.{ decls }
 
 let elab prog = run (elab_program prog)

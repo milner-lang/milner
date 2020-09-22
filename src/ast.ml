@@ -4,39 +4,37 @@ type 'a annot = {
     annot_end : Lexing.position;
   }
 
-type ty =
-  | Arrow of ty annot list * ty annot
-  | Ty_app of ty annot * ty annot
-  | Ty_con of string
-  | Ty_var of string
-  | Unit
-  | Univ
-
 type adt = {
     adt_name : string;
     adt_params : (string * ty annot) list;
     adt_constrs : (string * ty annot list) list;
   }
 
-type literal =
+and literal =
   | Int_lit of int
   | Str_lit of string
   | Unit_lit
 
-type pat =
+and pat =
   | As_pat of pat annot * string
   | Constr_pat of string * pat annot list
   | Lit_pat of literal
   | Var_pat of string
   | Wild_pat
 
-type expr =
+and expr =
   | Apply_expr of expr annot * expr annot list
   | Constr_expr of string * expr annot list
   | Lit_expr of literal
   | Seq_expr of expr annot * expr annot
   | Var_expr of string
   | Generic_expr of string * ty annot list
+  | Arrow of expr annot list * expr annot
+  | Ty_app of expr annot * expr annot
+  | Unit
+  | Univ
+
+and ty = expr
 
 type clause = {
     clause_lhs : pat annot list;

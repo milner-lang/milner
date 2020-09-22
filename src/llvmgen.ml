@@ -101,6 +101,7 @@ let rec mangle_ty global type_args = function
   | Typing.Unit -> "unit"
   | Typing.Univ -> failwith "univ"
   | Typing.KArrow _ -> failwith "Unreachable"
+  | Typing.Const _ -> failwith "Const unimplemented"
 
 and mangle_datatype global type_args adt adt_args =
   let mangled_adt_args = List.rev_map (mangle_ty global type_args) adt_args in
@@ -226,6 +227,7 @@ and transl_ty global type_args ty : transl_ty =
   | Typing.Unit -> Zero_ty
   | Typing.Univ -> Zero_ty
   | Typing.KArrow _ -> failwith "Unreachable"
+  | Typing.Const _ -> failwith "Const unimplemented"
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)

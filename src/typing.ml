@@ -1,4 +1,8 @@
-module Subst = Map.Make(Int)
+type ns
+
+module IntMap = Map.Make(Int)
+module StringMap = Map.Make(String)
+module Subst = IntMap
 
 type size = Sz8 | Sz16 | Sz32 | Sz64
 type sign = Signed | Unsigned
@@ -23,6 +27,7 @@ and ty =
   | Univ
   | Rigid of int
   | Var of int
+  | Const of expr
 
 and fun_ty = {
     dom : ty list;
@@ -43,7 +48,58 @@ and datacon = {
     datacon_output : ty;
   }
 
+and expr =
+  | Apply_expr of ty * expr * expr list
+  | Constr_expr of ty * int * expr list
+  | Global_expr of string * ty array
+  | Int_expr of ty * int
+  | Str_expr of string
+  | Seq_expr of expr * expr
+  | Unit_expr
+  | Var_expr of ns var
+
 type forall = Forall of ty list * ty
+
+type case_tree =
+  | Leaf of int * (ns var * string) list
+  | Split of adt * ns var * (ns var list * case_tree) list
+  | Split_int of ns var * case_tree IntMap.t * case_tree
+  | Split_str of ns var * case_tree StringMap.t * case_tree
+
+type pat = {
+    pat_node : pat_node;
+    pat_vars : ns var list
+  }
+
+and pat_node =
+  | Constr_pat of ty * adt * int * pat list
+  | Int_pat of ty * int
+  | Str_pat of string
+  | Wild_pat
+
+type clause = {
+    clause_lhs : pat list;
+    clause_vars : ns var StringMap.t;
+    clause_rhs : expr;
+  }
+
+type fun_def = {
+    fun_name : string;
+    fun_ty : fun_ty;
+    fun_typarams : ty list;
+    fun_params : ns var list;
+    fun_tree : case_tree;
+    fun_clauses : (ns var StringMap.t * expr) list;
+  }
+
+type decl =
+  | External of string * ty
+  | Fun of fun_def
+
+type program = {
+    decls : decl list;
+  }
+
 
 let rec subst s = function
   | Neu(head, spine) -> Neu(head, List.map (subst s) spine)
@@ -55,9 +111,11 @@ let rec subst s = function
   | Univ -> Univ
   | Rigid id -> Rigid id
   | Var id ->
-     match Subst.find_opt id s with
+     begin match Subst.find_opt id s with
      | Some ty -> ty
      | None -> Var id
+     end
+  | expr -> expr
 
 let union s s' =
   Subst.union (fun _ a _ -> Some a) s s'
@@ -131,58 +189,4 @@ let rec inst tyargs = function
   | Unit -> Unit
   | Univ -> Univ
   | Var id -> Var id
-
-type ns
-
-module IntMap = Map.Make(Int)
-module StringMap = Map.Make(String)
-
-type case_tree =
-  | Leaf of int * (ns var * string) list
-  | Split of adt * ns var * (ns var list * case_tree) list
-  | Split_int of ns var * case_tree IntMap.t * case_tree
-  | Split_str of ns var * case_tree StringMap.t * case_tree
-
-type pat = {
-    pat_node : pat_node;
-    pat_vars : ns var list
-  }
-
-and pat_node =
-  | Constr_pat of ty * adt * int * pat list
-  | Int_pat of ty * int
-  | Str_pat of string
-  | Wild_pat
-
-type expr =
-  | Apply_expr of ty * expr * expr list
-  | Constr_expr of ty * int * expr list
-  | Global_expr of string * ty array
-  | Int_expr of ty * int
-  | Str_expr of string
-  | Seq_expr of expr * expr
-  | Unit_expr
-  | Var_expr of ns var
-
-type clause = {
-    clause_lhs : pat list;
-    clause_vars : ns var StringMap.t;
-    clause_rhs : expr;
-  }
-
-type fun_def = {
-    fun_name : string;
-    fun_ty : fun_ty;
-    fun_typarams : ty list;
-    fun_params : ns var list;
-    fun_tree : case_tree;
-    fun_clauses : (ns var StringMap.t * expr) list;
-  }
-
-type decl =
-  | External of string * ty
-  | Fun of fun_def
-
-type program = {
-    decls : decl list;
-  }
+  | expr -> expr

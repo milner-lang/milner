@@ -50,6 +50,7 @@ let rec pp_type prec fmt = function
   | Univ -> Format.pp_print_string fmt "type"
   | Rigid _ -> ()
   | Var _ -> ()
+  | Const _ -> ()
 
 let pp_with_vbox n fmt f =
   Format.pp_open_vbox fmt n;

@@ -139,14 +139,14 @@ let atom_ty :=
     }
   | id = UIDENT; {
     Ast.{
-      annot_item = Ty_con id;
+      annot_item = Constr_expr(id, []);
       annot_begin = $symbolstartpos;
       annot_end = $endpos;
     }
   }
   | id = LIDENT; {
       Ast.{
-        annot_item = Ty_var id;
+        annot_item = Var_expr id;
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
       }
