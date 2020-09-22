@@ -3,8 +3,12 @@ module IntMap = Map.Make(Int)
 module StringMap = Map.Make(String)
 module Symtable = ScopedMap.Make(String)
 
+type constr =
+  | Tycon of Typing.head * Typing.ty
+  | Datacon of Typing.adt * int
+
 type state = {
-    tycons : (string, Typing.head * Typing.ty) Hashtbl.t;
+    constrs : (string, constr) Hashtbl.t;
     funcs : (string, Typing.forall) Hashtbl.t;
     metavar_gen : int;
     var_gen : Typing.ns Var.gen;
@@ -25,14 +29,14 @@ type 'a t =
 let throw e _ s = (Error e, s)
 
 let init_state () =
-  let tycons = Hashtbl.create 20 in
-  Hashtbl.add tycons "Cstring" (Typing.Cstr, Typing.Univ);
-  Hashtbl.add tycons "Int32"
-    (Typing.Num(Typing.Signed, Typing.Sz32), Typing.Univ);
+  let constrs = Hashtbl.create 20 in
+  Hashtbl.add constrs "Cstring" (Tycon(Typing.Cstr, Typing.Univ));
+  Hashtbl.add constrs "Int32"
+    (Tycon(Typing.Num(Typing.Signed, Typing.Sz32), Typing.Univ));
   { var_gen = Var.init_gen;
     metavar_gen = 0;
     funcs = Hashtbl.create 20;
-    tycons }
+    constrs }
 
 let run m =
   let r, _ = m Symtable.empty (init_state ()) in
@@ -97,11 +101,21 @@ let find name env s =
   | None -> (Error (Error.Undefined name), s)
 
 let declare_tycon name tycon kind _ s =
-  Hashtbl.add s.tycons name (tycon, kind);
-  (Ok { data = () }, s)
+  match Hashtbl.find_opt s.constrs name with
+  | Some _ -> (Error (Error.Redefined name), s)
+  | None ->
+     Hashtbl.add s.constrs name (Tycon(tycon, kind));
+     (Ok { data = () }, s)
 
-let find_tcon name _ s =
-  match Hashtbl.find_opt s.tycons name with
+let declare_datacon name adt idx _ s =
+  match Hashtbl.find_opt s.constrs name with
+  | Some _ -> (Error (Error.Redefined name), s)
+  | None ->
+     Hashtbl.add s.constrs name (Datacon(adt, idx));
+     (Ok { data = () }, s)
+
+let find_constr name _ s =
+  match Hashtbl.find_opt s.constrs name with
   | None -> (Error (Error.Undefined name), s)
   | Some ty -> (Ok { data = ty }, s)
 
@@ -133,8 +147,11 @@ let rec ty_infer = function
      | _ -> throw (Error.Unimplemented "Ty infer app")
      end
   | Ast.Constr_expr(tycon, []) ->
-     let+ ty, kind = find_tcon tycon in
-     Typing.Neu(ty, []), kind
+     let* con = find_constr tycon in
+     begin match con with
+     | Tycon(ty, kind) -> return (Typing.Neu(ty, []), kind)
+     | Datacon _ -> throw (Error.Unimplemented "")
+     end
   | Ast.Arrow(dom, codom) ->
      let+ dom = mapM (fun x -> ty_check x.Ast.annot_item Typing.Univ) dom
      and+ codom, _ = ty_infer codom.Ast.annot_item in
@@ -142,7 +159,7 @@ let rec ty_infer = function
   | Ast.Var_expr name ->
      let* x = find name in
      begin match x with
-     | Type (v, kind) -> return (v, kind)
+     | Type(v, kind) -> return (v, kind)
      | _ -> throw (Error.Unimplemented "")
      end
   | _ -> throw (Error.Unimplemented "Dependent types")
@@ -199,7 +216,7 @@ let read_adt adt =
   in
   let* _ =
     fold_leftM (fun i (name, tys) ->
-        let+ tys =
+        let* tys =
           mapM (fun ann -> in_scope tparams (ty_check ann.Ast.annot_item Typing.Univ)) tys
         in
         let datacon =
@@ -207,6 +224,7 @@ let read_adt adt =
           ; datacon_inputs = tys
           ; datacon_output = Typing.Neu(Typing.Adt(adt'), params) }
         in
+        let+ () = declare_datacon name adt' i in
         constrs.(i) <- datacon;
         Hashtbl.add datacons name i;
         i + 1)

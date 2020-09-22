@@ -4,7 +4,7 @@ datatype Bool = False | True
 
 datatype Option (a : type) = None | Some(a)
 
-datatype Pt = Pt(Int32, Int32)
+datatype Point = Pt(Int32, Int32)
 
 val f: fun(Bool) -> Int32
 fun f
@@ -20,10 +20,10 @@ fun g
   | (Some(5)) = False
   | (_) = True
 
-val inv: fun(Pt) -> Pt
+val inv: fun(Point) -> Point
 fun inv(Pt(x, y)) = Pt(y, x)
 
-val foo: fun(Pt) -> ()
+val foo: fun(Point) -> ()
 fun foo(Pt(0, _)) = puts("Touching the x-axis")
      | (Pt(_, _)) = ()
 
