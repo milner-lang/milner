@@ -1,4 +1,4 @@
-external puts : fun(Cstring) -> ()
+external puts : fun(Cstring) -> Unit
 
 datatype Bool = False | True
 
@@ -23,7 +23,7 @@ fun g
 val inv: fun(Point) -> Point
 fun inv(Pt(x, y)) = Pt(y, x)
 
-val foo: fun(Point) -> ()
+val foo: fun(Point) -> Unit
 fun foo(Pt(0, _)) = puts("Touching the x-axis")
      | (Pt(_, _)) = ()
 

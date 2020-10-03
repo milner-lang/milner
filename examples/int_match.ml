@@ -1,4 +1,4 @@
-external puts : fun(Cstring) -> ()
+external puts : fun(Cstring) -> Unit
 
 val cases : fun(Int32) -> Cstring
 fun cases(0) = "Hello world!"

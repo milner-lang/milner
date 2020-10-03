@@ -17,13 +17,13 @@ and head =
   | Cstr
   | Num of sign * size
   | Adt of adt
+  | Unit
 
 and ty =
   | Neu of head * ty list
   | Fun_ty of fun_ty
   | Pointer of ty
   | KArrow of ty * ty
-  | Unit
   | Univ
   | Rigid of int
   | Var of int
@@ -107,7 +107,6 @@ let rec subst s = function
      Fun_ty { dom = List.map (subst s) fn.dom; codom = subst s fn.codom }
   | KArrow(t1, t2) -> KArrow(subst s t1, subst s t2)
   | Pointer ty -> Pointer (subst s ty)
-  | Unit -> Unit
   | Univ -> Univ
   | Rigid id -> Rigid id
   | Var id ->
@@ -115,7 +114,19 @@ let rec subst s = function
      | Some ty -> ty
      | None -> Var id
      end
-  | expr -> expr
+  | Const expr -> Const (subst_expr s expr)
+
+and subst_expr s = function
+  | Apply_expr(ret, f, args) ->
+     Apply_expr(subst s ret, subst_expr s f, List.map (subst_expr s) args)
+  | Constr_expr(ty, constr, args) ->
+     Constr_expr(subst s ty, constr, List.map (subst_expr s) args)
+  | Global_expr(name, tyargs) -> Global_expr(name, Array.map (subst s) tyargs)
+  | Int_expr(ty, i) -> Int_expr(subst s ty, i)
+  | Str_expr str -> Str_expr str
+  | Seq_expr(e1, e2) -> Seq_expr(subst_expr s e1, subst_expr s e2)
+  | Unit_expr -> Unit_expr
+  | Var_expr v -> Var_expr v
 
 let union s s' =
   Subst.union (fun _ a _ -> Some a) s s'
@@ -126,6 +137,7 @@ let unify_head lhs rhs = match lhs, rhs with
   | Adt ladt, Adt radt when ladt.adt_name = radt.adt_name -> Ok ()
   | Cstr, Cstr -> Ok ()
   | Num(a, b), Num(c, d) when a = c && b = d -> Ok ()
+  | Unit, Unit -> Ok ()
   | _, _ -> Error (Neu(lhs, []), Neu(rhs, []))
 
 let rec unify lhs rhs = match lhs, rhs with
@@ -139,11 +151,11 @@ let rec unify lhs rhs = match lhs, rhs with
      | Error (Unify e) -> Error e
      end
   | Pointer lhs, Pointer rhs -> unify lhs rhs
-  | Unit, Unit -> Ok Subst.empty
   | Univ, Univ -> Ok Subst.empty
   | Rigid id, Rigid id' when id = id' -> Ok Subst.empty
   | Var id, Var id' when id = id' -> Ok Subst.empty
   | Var id, ty | ty, Var id -> Ok (Subst.singleton id ty)
+  | Const lhs, Const rhs -> unify_expr lhs rhs
   | _, _ -> Error (lhs, rhs)
 
 and unify_neu head spine head' spine' =
@@ -177,6 +189,10 @@ and unify_fun lhs rhs =
      | Error e -> Error (Unify e)
      | Ok s -> Ok s
 
+and unify_expr lhs rhs = match lhs, rhs with
+  | Str_expr str1, Str_expr str2 when str1 = str2 -> Ok Subst.empty
+  | lhs, rhs -> Error (Const lhs, Const rhs)
+
 let rec inst tyargs = function
   | Neu(head, spine) -> Neu(head, List.map (inst tyargs) spine)
   | Fun_ty fun_ty ->
@@ -186,7 +202,19 @@ let rec inst tyargs = function
   | KArrow(t1, t2) -> KArrow(inst tyargs t1, inst tyargs t2)
   | Pointer ty -> Pointer (inst tyargs ty)
   | Rigid r -> tyargs.(r)
-  | Unit -> Unit
   | Univ -> Univ
   | Var id -> Var id
-  | expr -> expr
+  | Const expr -> Const (inst_expr tyargs expr)
+
+and inst_expr tyargs = function
+  | Apply_expr(ty, f, args) ->
+     Apply_expr(inst tyargs ty, inst_expr tyargs f, List.map (inst_expr tyargs) args)
+  | Constr_expr(ty, constr, args) ->
+     Constr_expr(inst tyargs ty, constr, List.map (inst_expr tyargs) args)
+  | Global_expr(name, tyargs') ->
+     Global_expr(name, Array.map (inst tyargs) tyargs')
+  | Int_expr(ty, i) -> Int_expr(inst tyargs ty, i)
+  | Str_expr str -> Str_expr str
+  | Seq_expr(e1, e2) -> Seq_expr(inst_expr tyargs e1, inst_expr tyargs e2)
+  | Unit_expr -> Unit_expr
+  | Var_expr var -> Var_expr var

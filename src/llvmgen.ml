@@ -94,11 +94,11 @@ let rec mangle_ty global type_args = function
      | Typing.Sz32 -> "int32"
      | Typing.Sz64 -> "int64"
      end
+  | Typing.Neu(Typing.Unit, _) -> "unit"
   | Typing.Fun_ty _fun_ty -> ""
   | Typing.Pointer _ -> "pointer"
   | Typing.Rigid v -> mangle_ty global type_args type_args.(v)
   | Typing.Var _ -> failwith "Unsolved type variable !?"
-  | Typing.Unit -> "unit"
   | Typing.Univ -> failwith "univ"
   | Typing.KArrow _ -> failwith "Unreachable"
   | Typing.Const _ -> failwith "Const unimplemented"
@@ -214,6 +214,7 @@ and transl_ty global type_args ty : transl_ty =
   | Typing.Neu(Typing.Cstr, _) ->
      Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
   | Typing.Neu(Typing.Num(_, sz), _) -> Ll_ty (transl_size llctx sz)
+  | Typing.Neu(Typing.Unit, _) -> Zero_ty
   | Typing.Fun_ty fun_ty ->
      begin match transl_fun_ty global type_args fun_ty with
      | None -> Uninhabited_ty
@@ -224,7 +225,6 @@ and transl_ty global type_args ty : transl_ty =
   | Typing.Pointer _ -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
   | Typing.Rigid v -> transl_ty global type_args type_args.(v)
   | Typing.Var _ -> failwith "Unsolved type variable!?"
-  | Typing.Unit -> Zero_ty
   | Typing.Univ -> Zero_ty
   | Typing.KArrow _ -> failwith "Unreachable"
   | Typing.Const _ -> failwith "Const unimplemented"

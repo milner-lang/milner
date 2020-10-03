@@ -151,13 +151,6 @@ let atom_ty :=
         annot_end = $endpos;
       }
     }
-  | LPAREN; RPAREN; {
-        Ast.{
-          annot_item = Unit;
-          annot_begin = $symbolstartpos;
-          annot_end = $endpos;
-        }
-      }
   | LPAREN; ~ = ty; RPAREN; { ty }
 
 let lit :=

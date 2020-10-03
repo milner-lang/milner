@@ -21,6 +21,7 @@ let pp_head fmt = function
      | Sz64 -> Format.pp_print_string fmt "64"
      end
   | Adt adt -> Format.pp_print_string fmt adt.Typing.adt_name
+  | Unit -> Format.pp_print_string fmt "()"
 
 let rec pp_type prec fmt = function
   | Typing.Neu(head, tys) ->
@@ -46,11 +47,17 @@ let rec pp_type prec fmt = function
          Format.pp_print_string fmt " -> ";
          pp_type 2 fmt codom
        )
-  | Unit -> Format.pp_print_string fmt "()"
   | Univ -> Format.pp_print_string fmt "type"
   | Rigid _ -> ()
   | Var _ -> ()
-  | Const _ -> ()
+  | Const expr -> pp_expr 0 fmt expr
+
+and pp_expr _prec fmt = function
+  | Typing.Str_expr str ->
+     Format.pp_print_char fmt '"';
+     Format.pp_print_string fmt (String.escaped str);
+     Format.pp_print_char fmt '"';
+  | _ -> ()
 
 let pp_with_vbox n fmt f =
   Format.pp_open_vbox fmt n;

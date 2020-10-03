@@ -1,4 +1,4 @@
-external puts : fun(Cstring) -> ()
+external puts : fun(Cstring) -> Unit
 
 val main : fun() -> Int32
 fun main() =

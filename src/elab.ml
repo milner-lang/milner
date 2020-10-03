@@ -28,6 +28,7 @@ let init_state () =
   Hashtbl.add constrs "Cstring" (Tycon(Typing.Cstr, Typing.Univ));
   Hashtbl.add constrs "Int32"
     (Tycon(Typing.Num(Typing.Signed, Typing.Sz32), Typing.Univ));
+  Hashtbl.add constrs "Unit" (Tycon(Typing.Unit, Typing.Univ));
   { var_gen = Var.init_gen;
     metavar_gen = 0;
     funcs = Hashtbl.create 20;
@@ -121,7 +122,7 @@ let unify ~expected ~actual =
 
 (** Infer the kind of a type. *)
 let rec ty_infer = function
-  | Ast.Unit -> return (Typing.Unit, Typing.Univ)
+  | Ast.Unit -> return (Typing.Neu(Typing.Unit, []), Typing.Univ)
   | Ast.Univ -> return (Typing.Univ, Typing.Univ)
   | Ast.Ty_app(f, x) ->
      let* pair = ty_infer f.Ast.annot_item in
@@ -265,7 +266,7 @@ let rec check_pat pat ty =
      | Ast.Int_lit _, Typing.Neu(Typing.Num(Typing.Signed, Typing.Sz32), []) ->
         return StringMap.empty
      | Ast.Str_lit _, Typing.Neu(Typing.Cstr, []) -> return StringMap.empty
-     | Ast.Unit_lit, Typing.Unit -> return StringMap.empty
+     | Ast.Unit_lit, Typing.Neu(Typing.Unit, []) -> return StringMap.empty
      | _, _ -> throw (Error.Unimplemented "Checking lit pat")
 
 and check_pats pats tys =
@@ -311,9 +312,11 @@ let rec infer subst = function
   | Ast.Lit_expr (Ast.Str_lit s) ->
      return (Typing.Str_expr s, Typing.Neu(Typing.Cstr, []), subst)
   | Ast.Lit_expr Ast.Unit_lit ->
-     return (Typing.Unit_expr, Typing.Unit, subst)
+     return (Typing.Unit_expr, Typing.Neu(Typing.Unit, []), subst)
   | Ast.Seq_expr(e1, e2) ->
-     let* typed_e1, subst = check subst e1.Ast.annot_item Typing.Unit in
+     let* typed_e1, subst =
+       check subst e1.Ast.annot_item (Typing.Neu(Typing.Unit, []))
+     in
      let+ typed_e2, ty, subst = infer subst e2.Ast.annot_item in
      (Typing.Seq_expr(typed_e1, typed_e2), ty, subst)
   | Ast.Var_expr name ->
@@ -370,7 +373,9 @@ and check subst expr ty = match expr, ty with
   | Ast.Lit_expr (Ast.Int_lit n), Typing.Neu (Num(_, _), []) ->
      return (Typing.Int_expr(ty, n), subst)
   | Ast.Seq_expr(e1, e2), ty ->
-     let* typed_e1, subst = check subst e1.Ast.annot_item Typing.Unit in
+     let* typed_e1, subst =
+       check subst e1.Ast.annot_item (Typing.Neu(Typing.Unit, []))
+     in
      let+ typed_e2, subst = check subst e2.Ast.annot_item ty in
      (Typing.Seq_expr(typed_e1, typed_e2), subst)
   | expr, ty ->
