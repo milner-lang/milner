@@ -14,17 +14,12 @@ type state = {
     var_gen : Typing.ns Var.gen;
   }
 
-type 'a payload = {
-    data : 'a;
-  }
-
 type var_kind =
   | Local of Typing.ns Var.t
   | Global of Typing.forall
   | Type of Typing.ty * Typing.ty
 
-type 'a t =
-  var_kind Symtable.t -> state -> ('a payload, Error.t) result * state
+type 'a t = var_kind Symtable.t -> state -> ('a, Error.t) result * state
 
 let throw e _ s = (Error e, s)
 
@@ -40,34 +35,28 @@ let init_state () =
 
 let run m =
   let r, _ = m Symtable.empty (init_state ()) in
-  match r with
-  | Error e -> Error e
-  | Ok w -> Ok w.data
+  r
 
 module Mon : Monad.MONAD with type 'a t = 'a t = struct
   type nonrec 'a t = 'a t
 
-  let return a _env s = (Ok { data = a }, s)
+  let return a _env s = (Ok a, s)
 
   let ( let+ ) t f env s =
     let r, s = t env s in
     match r with
     | Error e -> (Error e, s)
-    | Ok w -> (Ok { data = f w.data }, s)
+    | Ok a -> (Ok (f a), s)
 
   let ( and+ ) t1 t2 env s =
     let r1, s = t1 env s in
     match r1 with
     | Error e -> (Error e, s)
-    | Ok w1 ->
+    | Ok a ->
        let r2, s = t2 env s in
        match r2 with
        | Error e -> (Error e, s)
-       | Ok w2 ->
-          ( Ok {
-                data = (w1.data, w2.data);
-              }
-          , s )
+       | Ok b -> (Ok (a, b), s)
 
   let ( and* ) = ( and+ )
 
@@ -75,15 +64,11 @@ module Mon : Monad.MONAD with type 'a t = 'a t = struct
     let r1, s = t env s in
     match r1 with
     | Error e -> (Error e, s)
-    | Ok w1 ->
-       let r2, s = f w1.data env s in
+    | Ok a ->
+       let r2, s = f a env s in
        match r2 with
        | Error e -> (Error e, s)
-       | Ok w2 ->
-          ( Ok {
-                data = w2.data;
-              }
-          , s )
+       | Ok b -> (Ok b, s)
 end
 
 open Mon
@@ -93,11 +78,11 @@ let in_scope scope m env s =
   let (r, s) = m (Symtable.extend scope env) s in
   match r with
   | Error e -> (Error e, s)
-  | Ok w -> (Ok w, s)
+  | Ok a -> (Ok a, s)
 
 let find name env s =
   match Symtable.find name env with
-  | Some var -> (Ok { data = var }, s)
+  | Some var -> (Ok var, s)
   | None -> (Error (Error.Undefined name), s)
 
 let declare_tycon name tycon kind _ s =
@@ -105,23 +90,23 @@ let declare_tycon name tycon kind _ s =
   | Some _ -> (Error (Error.Redefined name), s)
   | None ->
      Hashtbl.add s.constrs name (Tycon(tycon, kind));
-     (Ok { data = () }, s)
+     (Ok (), s)
 
 let declare_datacon name adt idx _ s =
   match Hashtbl.find_opt s.constrs name with
   | Some _ -> (Error (Error.Redefined name), s)
   | None ->
      Hashtbl.add s.constrs name (Datacon(adt, idx));
-     (Ok { data = () }, s)
+     (Ok (), s)
 
 let find_constr name _ s =
   match Hashtbl.find_opt s.constrs name with
   | None -> (Error (Error.Undefined name), s)
-  | Some ty -> (Ok { data = ty }, s)
+  | Some ty -> (Ok ty, s)
 
 let fresh_var ty _ s =
   let (var, var_gen) = Var.fresh s.var_gen ty in
-  (Ok { data = var }, { s with var_gen })
+  (Ok var, { s with var_gen })
 
 let unify ~expected ~actual =
   match Typing.unify expected actual with
@@ -240,11 +225,11 @@ let decl_fun name ty _ s =
     (Error (Error.Redefined name), s)
   else (
     Hashtbl.add s.funcs name ty;
-    (Ok { data = () }, s)
+    (Ok (), s)
   )
 
 let get_fun name _ s =
-  (Ok { data = Hashtbl.find_opt s.funcs name }, s)
+  (Ok (Hashtbl.find_opt s.funcs name), s)
 
 exception String of string
 
