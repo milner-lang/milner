@@ -15,7 +15,7 @@ fun f
     puts("True");
     1
 
-val g: fun(Option Int32) -> Bool
+val g: fun(Option @ Int32) -> Bool
 fun g
   | (Some(5)) = False
   | (_) = True

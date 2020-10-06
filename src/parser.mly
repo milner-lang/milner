@@ -1,6 +1,7 @@
 %{
 %}
 
+%token AMP
 %token ARROW
 %token BAR
 %token COLON
@@ -75,25 +76,25 @@ let adt :=
       }
     }
 
-let adt_param := LPAREN; id = LIDENT; COLON; ~ = ty; RPAREN; { (id, ty) }
+let adt_param := LPAREN; id = LIDENT; COLON; ~ = expr; RPAREN; { (id, expr) }
 
 let constr :=
   | name = UIDENT; {
       (name, [])
     }
-  | name = UIDENT; LPAREN; tys = separated_nonempty_list(COMMA, ty); RPAREN; {
+  | name = UIDENT; LPAREN; tys = separated_nonempty_list(COMMA, expr); RPAREN; {
     (name, tys)
   }
 
-let external_decl := EXTERNAL; name = LIDENT; COLON; ~ = ty; {
-    (name, ty)
+let external_decl := EXTERNAL; name = LIDENT; COLON; ~ = expr; {
+    (name, expr)
   }
 
 let forward_decl :=
-  | VAL; name = LIDENT; COLON; ~ = ty; { (name, [], ty) }
+  | VAL; name = LIDENT; COLON; ~ = expr; { (name, [], expr) }
   | VAL; name = LIDENT; LANGLE;
-    params = separated_list(COMMA, ty_scheme_param); RANGLE; COLON; ~ = ty; {
-        (name, params, ty)
+    params = separated_list(COMMA, ty_scheme_param); RANGLE; COLON; ~ = expr; {
+        (name, params, expr)
       }
 
 let fun_def :=
@@ -104,54 +105,7 @@ let fun_def :=
         }
       }
 
-let ty_scheme_param := name = LIDENT; COLON; ~ = ty; { (name, ty) }
-
-let ty := arrow_ty
-
-let arrow_ty :=
-  | FUN; LPAREN; dom = separated_list(COMMA, ty); RPAREN; ARROW; codom = ty;
-    {
-      Ast.{
-        annot_item = Arrow(dom, codom);
-        annot_begin = $symbolstartpos;
-        annot_end = $endpos;
-      }
-    }
-  | app_ty
-
-let app_ty :=
-  | f = app_ty; x = atom_ty; {
-        Ast.{
-          annot_item = Ty_app(f, x);
-          annot_begin = $symbolstartpos;
-          annot_end = $endpos;
-        }
-      }
-  | atom_ty
-
-let atom_ty :=
-  | TYPE; {
-    Ast.{
-      annot_item = Univ;
-      annot_begin = $symbolstartpos;
-      annot_end = $endpos;
-    }
-    }
-  | id = UIDENT; {
-    Ast.{
-      annot_item = Constr_expr(id, []);
-      annot_begin = $symbolstartpos;
-      annot_end = $endpos;
-    }
-  }
-  | id = LIDENT; {
-      Ast.{
-        annot_item = Var_expr id;
-        annot_begin = $symbolstartpos;
-        annot_end = $endpos;
-      }
-    }
-  | LPAREN; ~ = ty; RPAREN; { ty }
+let ty_scheme_param := name = LIDENT; COLON; ~ = expr; { (name, expr) }
 
 let lit :=
   | int = INT_LIT; { Ast.Int_lit int }
@@ -227,6 +181,17 @@ let seq_expr :=
           annot_end = $endpos;
         }
       }
+  | control_expr
+
+let control_expr :=
+  | FUN; LPAREN; dom = separated_list(COMMA, expr); RPAREN; ARROW; codom = expr;
+    {
+      Ast.{
+        annot_item = Arrow(dom, codom);
+        annot_begin = $symbolstartpos;
+        annot_end = $endpos;
+      }
+    }
   | apply_expr
 
 let apply_expr :=
@@ -244,9 +209,23 @@ let apply_expr :=
           annot_end = $endpos;
         }
       }
+  | f = apply_expr; AMP; x = atom_expr; {
+        Ast.{
+          annot_item = Ty_app(f, x);
+          annot_begin = $symbolstartpos;
+          annot_end = $endpos;
+        }
+      }
   | atom_expr
 
 let atom_expr :=
+  | TYPE; {
+    Ast.{
+      annot_item = Univ;
+      annot_begin = $symbolstartpos;
+      annot_end = $endpos;
+    }
+  }
   | ~ = lit; {
       Ast.{
         annot_item = Lit_expr lit;
@@ -261,7 +240,7 @@ let atom_expr :=
         annot_end = $endpos;
       }
     }
-  | id = LIDENT; DOT; LANGLE; args = separated_list(COMMA, ty); RANGLE; {
+  | id = LIDENT; DOT; LANGLE; args = separated_list(COMMA, expr); RANGLE; {
         Ast.{
           annot_item = Generic_expr(id, args);
           annot_begin = $symbolstartpos;

@@ -148,6 +148,8 @@ let rec ty_infer = function
      | Type(v, kind) -> return (v, kind)
      | _ -> throw (Error.Unimplemented "")
      end
+  | Ast.Lit_expr (Ast.Str_lit str) ->
+     return (Typing.Const (Typing.Str_expr str), Typing.Neu(Typing.Cstr, []))
   | _ -> throw (Error.Unimplemented "Dependent types")
 
 and ty_check ast_ty kind =
@@ -162,7 +164,7 @@ let read_ty_scheme tvars ty =
         let+ kind = ty_check kind.Ast.annot_item Typing.Univ in
         ( i + 1
         , StringMap.add tvar (Type(Typing.Rigid i, kind)) tvars
-        , Typing.Univ :: kinds ))
+        , kind :: kinds ))
       (0, StringMap.empty, []) tvars
   in
   let+ ty, _ = in_scope tvar_map (ty_infer ty) in
@@ -203,7 +205,9 @@ let read_adt adt =
   let* _ =
     fold_leftM (fun i (name, tys) ->
         let* tys =
-          mapM (fun ann -> in_scope tparams (ty_check ann.Ast.annot_item Typing.Univ)) tys
+          mapM (fun ann ->
+              in_scope tparams (ty_check ann.Ast.annot_item Typing.Univ)
+            ) tys
         in
         let datacon =
           { Typing.datacon_name = name
@@ -326,7 +330,7 @@ let rec infer subst = function
         return (Typing.Global_expr(name, [||]), ty, subst)
      | Global (Typing.Forall(_, _)) -> throw (Error.Unimplemented "Global")
      | Local var -> return (Typing.Var_expr var, Var.ty var, subst)
-     | Type _ -> throw (Error.Unimplemented "First-class types")
+     | Type _ -> throw (Error.Unimplemented "First-class types in var")
      end
   | Ast.Generic_expr(name, tyargs) ->
      let* var = find name in
@@ -345,9 +349,12 @@ let rec infer subst = function
         let tyargs = Array.of_list tyargs in
         return (Typing.Global_expr(name, tyargs), Typing.inst tyargs ty, subst)
      | Local _ -> throw (Error.Unimplemented "Local with generics")
-     | Type _ -> throw (Error.Unimplemented "First-class types")
+     | Type _ -> throw (Error.Unimplemented "First-class types in polyvar")
      end
-  | _ -> throw (Error.Unimplemented "First-class types")
+  | Arrow _ -> throw (Error.Unimplemented "Arrow inference")
+  | Ty_app _ -> throw (Error.Unimplemented "TyApp inference")
+  | Unit -> throw (Error.Unimplemented "Unit inference")
+  | Univ -> throw (Error.Unimplemented "Univ inference")
 
 and check subst expr ty = match expr, ty with
   | Ast.Constr_expr(name, args), Typing.Neu(Typing.Adt adt, tyargs) ->

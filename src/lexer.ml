@@ -20,6 +20,7 @@ let () =
   Hashtbl.add keywords "val" VAL
 
 let rec tokenize lexbuf = match%sedlex lexbuf with
+  | '@' -> Ok AMP
   | '|' -> Ok BAR
   | ':' -> Ok COLON
   | ',' -> Ok COMMA
