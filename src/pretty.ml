@@ -24,7 +24,7 @@ let pp_head fmt = function
   | Unit -> Format.pp_print_string fmt "()"
 
 let rec pp_type prec fmt = function
-  | Typing.Neu(head, tys) ->
+  | Typing.Neu_ty(head, tys) ->
      parens 4 prec fmt (fun () ->
          pp_head fmt head;
          Format.pp_print_list
@@ -40,17 +40,17 @@ let rec pp_type prec fmt = function
          Format.pp_print_string fmt ") -> ";
          pp_type 0 fmt codom
        )
-  | Pointer _ -> ()
-  | KArrow(dom, codom) ->
+  | Ptr_ty _ -> ()
+  | KArrow_ty(dom, codom) ->
      parens 2 prec fmt (fun () ->
          pp_type 3 fmt dom;
          Format.pp_print_string fmt " -> ";
          pp_type 2 fmt codom
        )
-  | Univ -> Format.pp_print_string fmt "type"
-  | Rigid _ -> ()
-  | Var _ -> ()
-  | Const expr -> pp_expr 0 fmt expr
+  | Univ_ty -> Format.pp_print_string fmt "type"
+  | Rigid_ty _ -> ()
+  | Var_ty _ -> ()
+  | Const_ty expr -> pp_expr 0 fmt expr
 
 and pp_expr _prec fmt = function
   | Typing.Str_expr str ->

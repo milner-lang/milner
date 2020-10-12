@@ -20,14 +20,14 @@ and head =
   | Unit
 
 and ty =
-  | Neu of head * ty list
+  | Neu_ty of head * ty list
   | Fun_ty of fun_ty
-  | Pointer of ty
-  | KArrow of ty * ty
-  | Univ
-  | Rigid of int
-  | Var of int
-  | Const of expr
+  | Ptr_ty of ty
+  | KArrow_ty of ty * ty
+  | Univ_ty
+  | Rigid_ty of int
+  | Var_ty of int
+  | Const_ty of expr
 
 and fun_ty = {
     dom : ty list;
@@ -102,19 +102,19 @@ type program = {
 
 
 let rec subst s = function
-  | Neu(head, spine) -> Neu(head, List.map (subst s) spine)
+  | Neu_ty(head, spine) -> Neu_ty(head, List.map (subst s) spine)
   | Fun_ty fn ->
      Fun_ty { dom = List.map (subst s) fn.dom; codom = subst s fn.codom }
-  | KArrow(t1, t2) -> KArrow(subst s t1, subst s t2)
-  | Pointer ty -> Pointer (subst s ty)
-  | Univ -> Univ
-  | Rigid id -> Rigid id
-  | Var id ->
+  | KArrow_ty(t1, t2) -> KArrow_ty(subst s t1, subst s t2)
+  | Ptr_ty ty -> Ptr_ty (subst s ty)
+  | Univ_ty -> Univ_ty
+  | Rigid_ty id -> Rigid_ty id
+  | Var_ty id ->
      begin match Subst.find_opt id s with
      | Some ty -> ty
-     | None -> Var id
+     | None -> Var_ty id
      end
-  | Const expr -> Const (subst_expr s expr)
+  | Const_ty expr -> Const_ty (subst_expr s expr)
 
 and subst_expr s = function
   | Apply_expr(ret, f, args) ->
@@ -138,10 +138,10 @@ let unify_head lhs rhs = match lhs, rhs with
   | Cstr, Cstr -> Ok ()
   | Num(a, b), Num(c, d) when a = c && b = d -> Ok ()
   | Unit, Unit -> Ok ()
-  | _, _ -> Error (Neu(lhs, []), Neu(rhs, []))
+  | _, _ -> Error (Neu_ty(lhs, []), Neu_ty(rhs, []))
 
 let rec unify lhs rhs = match lhs, rhs with
-  | Neu (head, spine), Neu (head', spine') ->
+  | Neu_ty(head, spine), Neu_ty(head', spine') ->
      unify_neu head spine head' spine'
   | Fun_ty lhs', Fun_ty rhs' ->
      begin match unify_fun lhs' rhs' with
@@ -150,12 +150,12 @@ let rec unify lhs rhs = match lhs, rhs with
      | Error Too_few -> Error (lhs, rhs)
      | Error (Unify e) -> Error e
      end
-  | Pointer lhs, Pointer rhs -> unify lhs rhs
-  | Univ, Univ -> Ok Subst.empty
-  | Rigid id, Rigid id' when id = id' -> Ok Subst.empty
-  | Var id, Var id' when id = id' -> Ok Subst.empty
-  | Var id, ty | ty, Var id -> Ok (Subst.singleton id ty)
-  | Const lhs, Const rhs -> unify_expr lhs rhs
+  | Ptr_ty lhs, Ptr_ty rhs -> unify lhs rhs
+  | Univ_ty, Univ_ty -> Ok Subst.empty
+  | Rigid_ty id, Rigid_ty id' when id = id' -> Ok Subst.empty
+  | Var_ty id, Var_ty id' when id = id' -> Ok Subst.empty
+  | Var_ty id, ty | ty, Var_ty id -> Ok (Subst.singleton id ty)
+  | Const_ty lhs, Const_ty rhs -> unify_expr lhs rhs
   | _, _ -> Error (lhs, rhs)
 
 and unify_neu head spine head' spine' =
@@ -170,7 +170,7 @@ and unify_neu head spine head' spine' =
      | Ok _ -> unify_neu head spine head' spine'
      | Error e -> Error e
      end
-  | _, _ -> Error (Neu(head, spine), Neu(head', spine'))
+  | _, _ -> Error (Neu_ty(head, spine), Neu_ty(head', spine'))
 
 and unify_fun lhs rhs =
   let rec loop s lhs rhs = match lhs, rhs with
@@ -191,20 +191,20 @@ and unify_fun lhs rhs =
 
 and unify_expr lhs rhs = match lhs, rhs with
   | Str_expr str1, Str_expr str2 when str1 = str2 -> Ok Subst.empty
-  | lhs, rhs -> Error (Const lhs, Const rhs)
+  | lhs, rhs -> Error (Const_ty lhs, Const_ty rhs)
 
 let rec inst tyargs = function
-  | Neu(head, spine) -> Neu(head, List.map (inst tyargs) spine)
+  | Neu_ty(head, spine) -> Neu_ty(head, List.map (inst tyargs) spine)
   | Fun_ty fun_ty ->
      Fun_ty
        { dom = List.map (inst tyargs) fun_ty.dom
        ; codom = inst tyargs fun_ty.codom }
-  | KArrow(t1, t2) -> KArrow(inst tyargs t1, inst tyargs t2)
-  | Pointer ty -> Pointer (inst tyargs ty)
-  | Rigid r -> tyargs.(r)
-  | Univ -> Univ
-  | Var id -> Var id
-  | Const expr -> Const (inst_expr tyargs expr)
+  | KArrow_ty(t1, t2) -> KArrow_ty(inst tyargs t1, inst tyargs t2)
+  | Ptr_ty ty -> Ptr_ty (inst tyargs ty)
+  | Rigid_ty r -> tyargs.(r)
+  | Univ_ty -> Univ_ty
+  | Var_ty id -> Var_ty id
+  | Const_ty expr -> Const_ty (inst_expr tyargs expr)
 
 and inst_expr tyargs = function
   | Apply_expr(ty, f, args) ->

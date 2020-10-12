@@ -25,10 +25,9 @@ let throw e _ s = (Error e, s)
 
 let init_state () =
   let constrs = Hashtbl.create 20 in
-  Hashtbl.add constrs "Cstring" (Tycon(Typing.Cstr, Typing.Univ));
-  Hashtbl.add constrs "Int32"
-    (Tycon(Typing.Num(Typing.Signed, Typing.Sz32), Typing.Univ));
-  Hashtbl.add constrs "Unit" (Tycon(Typing.Unit, Typing.Univ));
+  Hashtbl.add constrs "Cstring" (Tycon(Cstr, Univ_ty));
+  Hashtbl.add constrs "Int32" (Tycon(Num(Signed, Sz32), Univ_ty));
+  Hashtbl.add constrs "Unit" (Tycon(Unit, Univ_ty));
   { var_gen = Var.init_gen;
     metavar_gen = 0;
     funcs = Hashtbl.create 20;
@@ -122,26 +121,26 @@ let unify ~expected ~actual =
 
 (** Infer the kind of a type. *)
 let rec ty_infer = function
-  | Ast.Unit -> return (Typing.Neu(Typing.Unit, []), Typing.Univ)
-  | Ast.Univ -> return (Typing.Univ, Typing.Univ)
+  | Ast.Unit -> return (Typing.Neu_ty(Typing.Unit, []), Typing.Univ_ty)
+  | Ast.Univ -> return (Typing.Univ_ty, Typing.Univ_ty)
   | Ast.Ty_app(f, x) ->
      let* pair = ty_infer f.Ast.annot_item in
      begin match pair with
-     | Typing.Neu(Adt(adt), spine), Typing.KArrow(dom, cod) ->
+     | Typing.Neu_ty(Adt(adt), spine), Typing.KArrow_ty(dom, cod) ->
         let+ x = ty_check x.Ast.annot_item dom in
-        Typing.Neu(Adt(adt), x :: spine), cod
+        Typing.Neu_ty(Adt(adt), x :: spine), cod
      | _ -> throw (Error.Unimplemented "Ty infer app")
      end
   | Ast.Constr_expr(tycon, []) ->
      let* con = find_constr tycon in
      begin match con with
-     | Tycon(ty, kind) -> return (Typing.Neu(ty, []), kind)
+     | Tycon(ty, kind) -> return (Typing.Neu_ty(ty, []), kind)
      | Datacon _ -> throw (Error.Unimplemented "")
      end
   | Ast.Arrow(dom, codom) ->
-     let+ dom = mapM (fun x -> ty_check x.Ast.annot_item Typing.Univ) dom
+     let+ dom = mapM (fun x -> ty_check x.Ast.annot_item Typing.Univ_ty) dom
      and+ codom, _ = ty_infer codom.Ast.annot_item in
-     (Typing.Fun_ty { dom; codom }, Typing.Univ)
+     (Typing.Fun_ty { dom; codom }, Typing.Univ_ty)
   | Ast.Var_expr name ->
      let* x = find name in
      begin match x with
@@ -149,7 +148,9 @@ let rec ty_infer = function
      | _ -> throw (Error.Unimplemented "")
      end
   | Ast.Lit_expr (Ast.Str_lit str) ->
-     return (Typing.Const (Typing.Str_expr str), Typing.Neu(Typing.Cstr, []))
+     return
+       ( Typing.Const_ty (Typing.Str_expr str)
+       , Typing.Neu_ty(Typing.Cstr, []) )
   | _ -> throw (Error.Unimplemented "Dependent types")
 
 and ty_check ast_ty kind =
@@ -161,9 +162,9 @@ let read_ty_scheme tvars ty =
   let* _, tvar_map, kinds =
     fold_leftM
       (fun (i, tvars, kinds) (tvar, kind) ->
-        let+ kind = ty_check kind.Ast.annot_item Typing.Univ in
+        let+ kind = ty_check kind.Ast.annot_item Typing.Univ_ty in
         ( i + 1
-        , StringMap.add tvar (Type(Typing.Rigid i, kind)) tvars
+        , StringMap.add tvar (Type(Typing.Rigid_ty i, kind)) tvars
         , kind :: kinds ))
       (0, StringMap.empty, []) tvars
   in
@@ -176,12 +177,12 @@ let read_adt adt =
     Array.make (List.length adt.Ast.adt_constrs)
       { Typing.datacon_name = ""
       ; datacon_inputs = []
-      ; datacon_output = Typing.Univ }
+      ; datacon_output = Typing.Univ_ty }
   in
   let* param_count, params, kinds, tparams =
     fold_leftM (fun (i, params, kinds, map) (name, kind) ->
-        let+ kind = ty_check kind.Ast.annot_item Typing.Univ in
-        let ty = Typing.Rigid i in
+        let+ kind = ty_check kind.Ast.annot_item Typing.Univ_ty in
+        let ty = Typing.Rigid_ty i in
         ( i + 1
         , ty :: params
         , kind :: kinds
@@ -190,8 +191,8 @@ let read_adt adt =
   in
   let datacons = Hashtbl.create (Array.length constrs) in
   let rec loop = function
-    | [] -> Typing.Univ
-    | kind :: kinds -> Typing.KArrow(kind, loop kinds)
+    | [] -> Typing.Univ_ty
+    | kind :: kinds -> Typing.KArrow_ty(kind, loop kinds)
   in
   let adt' =
     Typing.{
@@ -206,13 +207,13 @@ let read_adt adt =
     fold_leftM (fun i (name, tys) ->
         let* tys =
           mapM (fun ann ->
-              in_scope tparams (ty_check ann.Ast.annot_item Typing.Univ)
+              in_scope tparams (ty_check ann.Ast.annot_item Typing.Univ_ty)
             ) tys
         in
         let datacon =
           { Typing.datacon_name = name
           ; datacon_inputs = tys
-          ; datacon_output = Typing.Neu(Typing.Adt(adt'), params) }
+          ; datacon_output = Typing.Neu_ty(Typing.Adt(adt'), params) }
         in
         let+ () = declare_datacon name adt' i in
         constrs.(i) <- datacon;
@@ -250,7 +251,7 @@ let rec check_pat pat ty =
        return (StringMap.add name var map)
   | Ast.Constr_pat(name, pats) ->
      begin match ty with
-     | Typing.Neu(Typing.Adt adt, tyargs) ->
+     | Typing.Neu_ty(Adt adt, tyargs) ->
         let idx = Hashtbl.find adt.Typing.adt_constr_names name in
         let datacon = adt.adt_constrs.(idx) in
         let tyargs = Array.of_list (List.rev tyargs) in
@@ -267,10 +268,10 @@ let rec check_pat pat ty =
   | Ast.Wild_pat -> return StringMap.empty
   | Ast.Lit_pat lit ->
      match lit, ty with
-     | Ast.Int_lit _, Typing.Neu(Typing.Num(Typing.Signed, Typing.Sz32), []) ->
+     | Ast.Int_lit _, Typing.Neu_ty(Num(Signed, Sz32), []) ->
         return StringMap.empty
-     | Ast.Str_lit _, Typing.Neu(Typing.Cstr, []) -> return StringMap.empty
-     | Ast.Unit_lit, Typing.Neu(Typing.Unit, []) -> return StringMap.empty
+     | Ast.Str_lit _, Typing.Neu_ty(Cstr, []) -> return StringMap.empty
+     | Ast.Unit_lit, Typing.Neu_ty(Unit, []) -> return StringMap.empty
      | _, _ -> throw (Error.Unimplemented "Checking lit pat")
 
 and check_pats pats tys =
@@ -314,12 +315,12 @@ let rec infer subst = function
   | Ast.Lit_expr (Ast.Int_lit _) ->
      throw (Error.Unimplemented "Cannot infer int lit")
   | Ast.Lit_expr (Ast.Str_lit s) ->
-     return (Typing.Str_expr s, Typing.Neu(Typing.Cstr, []), subst)
+     return (Typing.Str_expr s, Typing.Neu_ty(Cstr, []), subst)
   | Ast.Lit_expr Ast.Unit_lit ->
-     return (Typing.Unit_expr, Typing.Neu(Typing.Unit, []), subst)
+     return (Typing.Unit_expr, Typing.Neu_ty(Unit, []), subst)
   | Ast.Seq_expr(e1, e2) ->
      let* typed_e1, subst =
-       check subst e1.Ast.annot_item (Typing.Neu(Typing.Unit, []))
+       check subst e1.Ast.annot_item (Typing.Neu_ty(Unit, []))
      in
      let+ typed_e2, ty, subst = infer subst e2.Ast.annot_item in
      (Typing.Seq_expr(typed_e1, typed_e2), ty, subst)
@@ -357,7 +358,7 @@ let rec infer subst = function
   | Univ -> throw (Error.Unimplemented "Univ inference")
 
 and check subst expr ty = match expr, ty with
-  | Ast.Constr_expr(name, args), Typing.Neu(Typing.Adt adt, tyargs) ->
+  | Ast.Constr_expr(name, args), Typing.Neu_ty(Typing.Adt adt, tyargs) ->
      let idx = Hashtbl.find adt.Typing.adt_constr_names name in
      let datacon = adt.Typing.adt_constrs.(idx) in
      let tyargs = Array.of_list (List.rev tyargs) in
@@ -377,11 +378,11 @@ and check subst expr ty = match expr, ty with
      let ty' = Typing.inst tyargs datacon.Typing.datacon_output in
      let+ _ = unify ~expected:ty ~actual:ty' in
      (Typing.Constr_expr(ty, idx, args), subst)
-  | Ast.Lit_expr (Ast.Int_lit n), Typing.Neu (Num(_, _), []) ->
+  | Ast.Lit_expr (Ast.Int_lit n), Typing.Neu_ty(Num(_, _), []) ->
      return (Typing.Int_expr(ty, n), subst)
   | Ast.Seq_expr(e1, e2), ty ->
      let* typed_e1, subst =
-       check subst e1.Ast.annot_item (Typing.Neu(Typing.Unit, []))
+       check subst e1.Ast.annot_item (Typing.Neu_ty(Unit, []))
      in
      let+ typed_e2, subst = check subst e2.Ast.annot_item ty in
      (Typing.Seq_expr(typed_e1, typed_e2), subst)
@@ -487,7 +488,7 @@ let rec elab_clauses clauses dom codom = match clauses with
      | Irrefut pat_vars -> return (Typing.Leaf(clause.rhs, pat_vars))
      | Refut var ->
         match Var.ty var with
-        | Typing.Neu (Typing.Adt adt, tyargs) ->
+        | Typing.Neu_ty(Adt adt, tyargs) ->
            let tyargs = Array.of_list (List.rev tyargs) in
            let+ cases =
              Array.fold_right (fun datacon acc ->
@@ -497,13 +498,13 @@ let rec elab_clauses clauses dom codom = match clauses with
                ) adt.Typing.adt_constrs (return [])
            in
            Typing.Split(adt, var, cases)
-        | Typing.Neu(Typing.Cstr, []) ->
+        | Typing.Neu_ty(Cstr, []) ->
            let+ strmap, otherwise = refine_str var clauses dom codom in
            Typing.Split_str(var, strmap, otherwise)
-        | Typing.Neu(Typing.Num(Typing.Signed, Typing.Sz32), []) ->
+        | Typing.Neu_ty(Num(Signed, Sz32), []) ->
            let+ intmap, otherwise = refine_int var clauses dom codom in
            Typing.Split_int(var, intmap, otherwise)
-        | Typing.Rigid _ -> throw (Error.Unimplemented "Rigid")
+        | Typing.Rigid_ty _ -> throw (Error.Unimplemented "Rigid")
         | _ -> throw (Error.Unimplemented "Not a pattern-matchable type")
 
 and refine datacon tyargs var clauses dom codom =

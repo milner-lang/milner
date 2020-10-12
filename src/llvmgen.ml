@@ -80,12 +80,12 @@ let rec erase_types = function
      Option.map (fun tys -> Some llty :: tys) (erase_types tys)
 
 let rec mangle_ty global type_args = function
-  | Typing.Neu(Typing.Adt adt, tyargs) ->
+  | Typing.Neu_ty(Typing.Adt adt, tyargs) ->
      let name = mangle_datatype global type_args adt tyargs in
      ignore (compile_datatype global type_args adt tyargs);
      name
-  | Typing.Neu(Typing.Cstr, _) -> "cstr"
-  | Typing.Neu(Typing.Num(_, sz), _) ->
+  | Typing.Neu_ty(Typing.Cstr, _) -> "cstr"
+  | Typing.Neu_ty(Typing.Num(_, sz), _) ->
      (* Ints and nats share the same machine representation, so instantiations
         for ints and nats can share the same code *)
      begin match sz with
@@ -94,14 +94,14 @@ let rec mangle_ty global type_args = function
      | Typing.Sz32 -> "int32"
      | Typing.Sz64 -> "int64"
      end
-  | Typing.Neu(Typing.Unit, _) -> "unit"
+  | Typing.Neu_ty(Typing.Unit, _) -> "unit"
   | Typing.Fun_ty _fun_ty -> ""
-  | Typing.Pointer _ -> "pointer"
-  | Typing.Rigid v -> mangle_ty global type_args type_args.(v)
-  | Typing.Var _ -> failwith "Unsolved type variable !?"
-  | Typing.Univ -> failwith "univ"
-  | Typing.KArrow _ -> failwith "Unreachable"
-  | Typing.Const _ -> failwith "Const unimplemented"
+  | Typing.Ptr_ty _ -> "pointer"
+  | Typing.Rigid_ty v -> mangle_ty global type_args type_args.(v)
+  | Typing.Var_ty _ -> failwith "Unsolved type variable !?"
+  | Typing.Univ_ty -> failwith "univ"
+  | Typing.KArrow_ty _ -> failwith "Unreachable"
+  | Typing.Const_ty _ -> failwith "Const unimplemented"
 
 and mangle_datatype global type_args adt adt_args =
   let mangled_adt_args = List.rev_map (mangle_ty global type_args) adt_args in
@@ -203,7 +203,7 @@ and transl_size llctx = function
 and transl_ty global type_args ty : transl_ty =
   let llctx = global.llctx in
   match ty with
-  | Typing.Neu (Typing.Adt adt, adt_args) ->
+  | Typing.Neu_ty(Typing.Adt adt, adt_args) ->
      let mangled = mangle_datatype global type_args adt adt_args in
      begin match Hashtbl.find global.types mangled with
      | Uninhabited -> Uninhabited_ty
@@ -211,10 +211,10 @@ and transl_ty global type_args ty : transl_ty =
      | Product(_, ty) -> Ll_ty ty
      | Basic_sum(ty, _) -> Ll_ty ty
      end
-  | Typing.Neu(Typing.Cstr, _) ->
+  | Typing.Neu_ty(Typing.Cstr, _) ->
      Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
-  | Typing.Neu(Typing.Num(_, sz), _) -> Ll_ty (transl_size llctx sz)
-  | Typing.Neu(Typing.Unit, _) -> Zero_ty
+  | Typing.Neu_ty(Typing.Num(_, sz), _) -> Ll_ty (transl_size llctx sz)
+  | Typing.Neu_ty(Typing.Unit, _) -> Zero_ty
   | Typing.Fun_ty fun_ty ->
      begin match transl_fun_ty global type_args fun_ty with
      | None -> Uninhabited_ty
@@ -222,12 +222,12 @@ and transl_ty global type_args ty : transl_ty =
         let params = params |> remove_nones |> Array.of_list in
         Ll_ty (Llvm.function_type ret params)
      end
-  | Typing.Pointer _ -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
-  | Typing.Rigid v -> transl_ty global type_args type_args.(v)
-  | Typing.Var _ -> failwith "Unsolved type variable!?"
-  | Typing.Univ -> Zero_ty
-  | Typing.KArrow _ -> failwith "Unreachable"
-  | Typing.Const _ -> failwith "Const unimplemented"
+  | Typing.Ptr_ty _ -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
+  | Typing.Rigid_ty v -> transl_ty global type_args type_args.(v)
+  | Typing.Var_ty _ -> failwith "Unsolved type variable!?"
+  | Typing.Univ_ty -> Zero_ty
+  | Typing.KArrow_ty _ -> failwith "Unreachable"
+  | Typing.Const_ty _ -> failwith "Const unimplemented"
 
 (** In the parameter type list, the unit type translates to None. In the return
     type, the unit type translates to Some void. *)
