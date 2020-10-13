@@ -25,8 +25,8 @@ and ty =
   | Ptr_ty of ty
   | KArrow_ty of ty * ty
   | Univ_ty
-  | Rigid_ty of int
-  | Var_ty of int
+  | Staticvar_ty of int
+    (** A static-var is statically known and monomorphized *)
   | Const_ty of expr
 
 and fun_ty = {
@@ -108,12 +108,7 @@ let rec subst s = function
   | KArrow_ty(t1, t2) -> KArrow_ty(subst s t1, subst s t2)
   | Ptr_ty ty -> Ptr_ty (subst s ty)
   | Univ_ty -> Univ_ty
-  | Rigid_ty id -> Rigid_ty id
-  | Var_ty id ->
-     begin match Subst.find_opt id s with
-     | Some ty -> ty
-     | None -> Var_ty id
-     end
+  | Staticvar_ty id -> Staticvar_ty id
   | Const_ty expr -> Const_ty (subst_expr s expr)
 
 and subst_expr s = function
@@ -152,9 +147,7 @@ let rec unify lhs rhs = match lhs, rhs with
      end
   | Ptr_ty lhs, Ptr_ty rhs -> unify lhs rhs
   | Univ_ty, Univ_ty -> Ok Subst.empty
-  | Rigid_ty id, Rigid_ty id' when id = id' -> Ok Subst.empty
-  | Var_ty id, Var_ty id' when id = id' -> Ok Subst.empty
-  | Var_ty id, ty | ty, Var_ty id -> Ok (Subst.singleton id ty)
+  | Staticvar_ty id, Staticvar_ty id' when id = id' -> Ok Subst.empty
   | Const_ty lhs, Const_ty rhs -> unify_expr lhs rhs
   | _, _ -> Error (lhs, rhs)
 
@@ -201,9 +194,8 @@ let rec inst tyargs = function
        ; codom = inst tyargs fun_ty.codom }
   | KArrow_ty(t1, t2) -> KArrow_ty(inst tyargs t1, inst tyargs t2)
   | Ptr_ty ty -> Ptr_ty (inst tyargs ty)
-  | Rigid_ty r -> tyargs.(r)
+  | Staticvar_ty v -> tyargs.(v)
   | Univ_ty -> Univ_ty
-  | Var_ty id -> Var_ty id
   | Const_ty expr -> Const_ty (inst_expr tyargs expr)
 
 and inst_expr tyargs = function

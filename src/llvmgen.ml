@@ -97,8 +97,7 @@ let rec mangle_ty global type_args = function
   | Typing.Neu_ty(Typing.Unit, _) -> "unit"
   | Typing.Fun_ty _fun_ty -> ""
   | Typing.Ptr_ty _ -> "pointer"
-  | Typing.Rigid_ty v -> mangle_ty global type_args type_args.(v)
-  | Typing.Var_ty _ -> failwith "Unsolved type variable !?"
+  | Typing.Staticvar_ty v -> mangle_ty global type_args type_args.(v)
   | Typing.Univ_ty -> failwith "univ"
   | Typing.KArrow_ty _ -> failwith "Unreachable"
   | Typing.Const_ty _ -> failwith "Const unimplemented"
@@ -223,8 +222,7 @@ and transl_ty global type_args ty : transl_ty =
         Ll_ty (Llvm.function_type ret params)
      end
   | Typing.Ptr_ty _ -> Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))
-  | Typing.Rigid_ty v -> transl_ty global type_args type_args.(v)
-  | Typing.Var_ty _ -> failwith "Unsolved type variable!?"
+  | Typing.Staticvar_ty v -> transl_ty global type_args type_args.(v)
   | Typing.Univ_ty -> Zero_ty
   | Typing.KArrow_ty _ -> failwith "Unreachable"
   | Typing.Const_ty _ -> failwith "Const unimplemented"

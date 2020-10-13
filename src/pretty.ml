@@ -48,8 +48,7 @@ let rec pp_type prec fmt = function
          pp_type 2 fmt codom
        )
   | Univ_ty -> Format.pp_print_string fmt "type"
-  | Rigid_ty _ -> ()
-  | Var_ty _ -> ()
+  | Staticvar_ty _ -> ()
   | Const_ty expr -> pp_expr 0 fmt expr
 
 and pp_expr _prec fmt = function

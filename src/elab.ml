@@ -177,7 +177,7 @@ let read_ty_scheme tvars ty =
       (fun (i, tvars, kinds) (tvar, kind) ->
         let+ kind = ty_check kind.Ast.annot_item Typing.Univ_ty in
         ( i + 1
-        , StringMap.add tvar (Type(Typing.Rigid_ty i, kind)) tvars
+        , StringMap.add tvar (Type(Staticvar_ty i, kind)) tvars
         , kind :: kinds ))
       (0, StringMap.empty, []) tvars
   in
@@ -195,7 +195,7 @@ let read_adt adt =
   let* param_count, params, kinds, tparams =
     fold_leftM (fun (i, params, kinds, map) (name, kind) ->
         let+ kind = ty_check kind.Ast.annot_item Typing.Univ_ty in
-        let ty = Typing.Rigid_ty i in
+        let ty = Typing.Staticvar_ty i in
         ( i + 1
         , ty :: params
         , kind :: kinds
@@ -517,7 +517,6 @@ let rec elab_clauses clauses dom codom = match clauses with
         | Typing.Neu_ty(Num(Signed, Sz32), []) ->
            let+ intmap, otherwise = refine_int var clauses dom codom in
            Typing.Split_int(var, intmap, otherwise)
-        | Typing.Rigid_ty _ -> throw (Error.Unimplemented "Rigid")
         | _ -> throw (Error.Unimplemented "Not a pattern-matchable type")
 
 and refine datacon tyargs var clauses dom codom =
