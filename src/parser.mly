@@ -21,7 +21,6 @@
 %token TYPE
 %token VAL
 %token <int> INT_LIT
-%token <int> INT32_LIT
 %token <string> STRING_LIT
 %token <string> LIDENT
 %token <string> UIDENT
@@ -184,7 +183,8 @@ let seq_expr :=
   | control_expr
 
 let control_expr :=
-  | FUN; LPAREN; dom = separated_list(COMMA, expr); RPAREN; ARROW; codom = expr;
+  | FUN; LPAREN; dom = separated_list(COMMA, binder); RPAREN; ARROW;
+    codom = expr;
     {
       Ast.{
         annot_item = Arrow(dom, codom);
@@ -193,6 +193,10 @@ let control_expr :=
       }
     }
   | apply_expr
+
+let binder :=
+  | ~ = expr; { (None, expr) }
+  | name = LIDENT; COLON; ~ = expr; { (Some name, expr) }
 
 let apply_expr :=
   | f = apply_expr; LPAREN; args = separated_list(COMMA, expr); RPAREN; {

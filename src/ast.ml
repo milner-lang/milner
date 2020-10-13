@@ -29,7 +29,7 @@ and expr =
   | Seq_expr of expr annot * expr annot
   | Var_expr of string
   | Generic_expr of string * ty annot list
-  | Arrow of expr annot list * expr annot
+  | Arrow of (string option * expr annot) list * expr annot
   | Ty_app of expr annot * expr annot
   | Unit
   | Univ

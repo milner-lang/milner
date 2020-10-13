@@ -138,8 +138,21 @@ let rec ty_infer = function
      | Datacon _ -> throw (Error.Unimplemented "")
      end
   | Ast.Arrow(dom, codom) ->
-     let+ dom = mapM (fun x -> ty_check x.Ast.annot_item Typing.Univ_ty) dom
-     and+ codom, _ = ty_infer codom.Ast.annot_item in
+     let rec go = function
+       | [] ->
+          let+ codom, _ = ty_infer codom.Ast.annot_item in
+          ([], codom)
+       | (opt, ty) :: dom ->
+          let+ ty = ty_check ty.Ast.annot_item Typing.Univ_ty
+          and+ (dom, codom) = match opt with
+            | None -> go dom
+            | Some _ ->
+               (* TODO dependent function types *)
+               in_scope StringMap.empty (go dom)
+          in
+          (ty :: dom, codom)
+     in
+     let+ (dom, codom) = go dom in
      (Typing.Fun_ty { dom; codom }, Typing.Univ_ty)
   | Ast.Var_expr name ->
      let* x = find name in

@@ -35,9 +35,6 @@ let rec tokenize lexbuf = match%sedlex lexbuf with
   | '"' -> string (Buffer.create 17) lexbuf
   | 0x2192 (* → *) -> Ok ARROW
   | "->" -> Ok ARROW
-  | base10_int, "i32" ->
-     let str = Sedlexing.Utf8.lexeme lexbuf in
-     Ok (INT32_LIT (int_of_string (String.sub str 0 (String.length str - 3))))
   | base10_int ->
      let str = Sedlexing.Utf8.lexeme lexbuf in
      Ok (INT_LIT (int_of_string str))
