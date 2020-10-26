@@ -42,35 +42,35 @@ let attr_payload :=
   | str = LIDENT; { Ast.Attr_ident str }
 
 let decl :=
-  | annot_attr = attribute?; ~ = external_decl; {
+  | annot_attrs = list(attribute); ~ = external_decl; {
       let name, ty = external_decl in
       Ast.{
-        annot_attr;
+        annot_attrs;
         annot_item = Ast.External(name, ty);
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
       }
     }
-  | annot_attr = attribute?; ~ = forward_decl; {
+  | annot_attrs = list(attribute); ~ = forward_decl; {
         let name, tvars, ty = forward_decl in
         Ast.{
-            annot_attr;
+            annot_attrs;
             annot_item = Forward_decl(name, tvars, ty);
             annot_begin = $symbolstartpos;
             annot_end = $endpos;
         }
       }
-  | annot_attr = attribute?; ~ = fun_def; {
+  | annot_attrs = list(attribute); ~ = fun_def; {
       Ast.{
-        annot_attr;
+        annot_attrs;
         annot_item = Ast.Fun fun_def;
         annot_begin = $symbolstartpos;
         annot_end = $endpos
       }
     }
-  | annot_attr = attribute?; ~ = adt; {
+  | annot_attrs = list(attribute); ~ = adt; {
       Ast.{
-        annot_attr;
+        annot_attrs;
         annot_item = Ast.Adt adt;
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
@@ -133,7 +133,7 @@ let lit :=
 let pat :=
   | ~ = pat; AS; id = LIDENT; {
         Ast.{
-          annot_attr = None;
+          annot_attrs = [];
           annot_item = As_pat(pat, id);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
@@ -144,7 +144,7 @@ let pat :=
 let pat_con :=
   | constr = UIDENT; LPAREN; pats = separated_list(COMMA, pat); RPAREN; {
         Ast.{
-          annot_attr = None;
+          annot_attrs = [];
           annot_item = Constr_pat(constr, pats);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
@@ -155,7 +155,7 @@ let pat_con :=
 let pat_atom :=
   | constr = UIDENT; {
       Ast.{
-        annot_attr = None;
+        annot_attrs = [];
         annot_item = Constr_pat(constr, []);
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
@@ -163,7 +163,7 @@ let pat_atom :=
     }
   | id = LIDENT; {
     Ast.{
-      annot_attr = None;
+      annot_attrs = [];
       annot_item = Var_pat id;
       annot_begin = $symbolstartpos;
       annot_end = $endpos;
@@ -171,7 +171,7 @@ let pat_atom :=
   }
   | ~ = lit; {
       Ast.{
-        annot_attr = None;
+        annot_attrs = [];
         annot_item = Lit_pat lit;
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
@@ -179,7 +179,7 @@ let pat_atom :=
     }
   | UNDERSCORE; {
       Ast.{
-        annot_attr = None;
+        annot_attrs = [];
         annot_item = Wild_pat;
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
@@ -200,7 +200,7 @@ let expr := seq_expr
 let seq_expr :=
   | exp1 = seq_expr; SEMICOLON; exp2 = apply_expr; {
         Ast.{
-          annot_attr = None;
+          annot_attrs = [];
           annot_item = Seq_expr(exp1, exp2);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
@@ -213,7 +213,7 @@ let control_expr :=
     codom = expr;
     {
       Ast.{
-        annot_attr = None;
+        annot_attrs = [];
         annot_item = Arrow(dom, codom);
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
@@ -228,7 +228,7 @@ let binder :=
 let apply_expr :=
   | f = apply_expr; LPAREN; args = separated_list(COMMA, expr); RPAREN; {
         Ast.{
-          annot_attr = None;
+          annot_attrs = [];
           annot_item = Apply_expr(f, args);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
@@ -236,7 +236,7 @@ let apply_expr :=
       }
   | constr = UIDENT; LPAREN; args = separated_list(COMMA, expr); RPAREN; {
         Ast.{
-          annot_attr = None;
+          annot_attrs = [];
           annot_item = Constr_expr(constr, args);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
@@ -244,7 +244,7 @@ let apply_expr :=
       }
   | f = apply_expr; AMP; x = atom_expr; {
         Ast.{
-          annot_attr = None;
+          annot_attrs = [];
           annot_item = Ty_app(f, x);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
@@ -255,7 +255,7 @@ let apply_expr :=
 let atom_expr :=
   | TYPE; {
     Ast.{
-      annot_attr = None;
+      annot_attrs = [];
       annot_item = Univ;
       annot_begin = $symbolstartpos;
       annot_end = $endpos;
@@ -263,7 +263,7 @@ let atom_expr :=
   }
   | ~ = lit; {
       Ast.{
-        annot_attr = None;
+        annot_attrs = [];
         annot_item = Lit_expr lit;
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
@@ -271,7 +271,7 @@ let atom_expr :=
   }
   | id = UIDENT; {
       Ast.{
-        annot_attr = None;
+        annot_attrs = [];
         annot_item = Constr_expr(id, []);
         annot_begin = $symbolstartpos;
         annot_end = $endpos;
@@ -279,7 +279,7 @@ let atom_expr :=
     }
   | id = LIDENT; DOT; LANGLE; args = separated_list(COMMA, expr); RANGLE; {
         Ast.{
-          annot_attr = None;
+          annot_attrs = [];
           annot_item = Generic_expr(id, args);
           annot_begin = $symbolstartpos;
           annot_end = $endpos;
@@ -287,7 +287,7 @@ let atom_expr :=
       }
   | id = LIDENT; {
       Ast.{
-        annot_attr = None;
+        annot_attrs = [];
         annot_item = Var_expr id;
         annot_begin = $symbolstartpos;
         annot_end = $endpos;

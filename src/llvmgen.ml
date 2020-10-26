@@ -562,7 +562,7 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
           ) fun_def.fun_vars;
         emit_expr global t fun_def.fun_body;
         begin
-          if fun_def.Ir.fun_is_entry then (
+          if fun_def.fun_attrs.is_entry then (
             let ty = Llvm.function_type (Llvm.i32_type llctx) [||] in
             let main = Llvm.define_function "main" ty global.llmod in
             let entry = Llvm.entry_block main in

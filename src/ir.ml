@@ -54,7 +54,7 @@ type fun_def = {
     fun_poly : Typing.ty list;
     fun_vars : ns Var.t list;
     fun_body : expr;
-    fun_is_entry : bool;
+    fun_attrs : Attr.fun_attrs;
   }
 
 type decl =
@@ -328,7 +328,7 @@ let compile_fun fun_def =
     fun_poly = fun_def.fun_typarams;
     fun_vars = L.to_list vars;
     fun_body = body;
-    fun_is_entry = fun_def.fun_is_entry }
+    fun_attrs = fun_def.fun_attrs }
 
 let compile_decl = function
   | Typing.External(name, ty) -> return (External(name, ty))

@@ -594,7 +594,16 @@ and refine_int var clauses dom codom =
   and+ otherwise = elab_clauses otherwise dom codom in
   (intmap, otherwise)
 
-let check_fun func is_entry fun_typarams Typing.{ dom; codom } =
+let rec extract_fun_attrs = function
+  | [] -> Attr.{ is_entry = false; calling_conv = Milner }, []
+  | Ast.Attr_ident "entry" :: attrs ->
+    let f_attrs, other_attrs = extract_fun_attrs attrs in
+    { f_attrs with is_entry = true }, other_attrs
+  | attr :: attrs ->
+    let f_attr, other_attrs = extract_fun_attrs attrs in
+    f_attr, attr :: other_attrs
+
+let check_fun func attrs fun_typarams Typing.{ dom; codom } =
   let* rhs =
     mapM (fun clause ->
         let* map = check_pats clause.Ast.clause_lhs dom in
@@ -628,7 +637,7 @@ let check_fun func is_entry fun_typarams Typing.{ dom; codom } =
       fun_params = vars;
       fun_tree = tree;
       fun_clauses = rhs;
-      fun_is_entry = is_entry;
+      fun_attrs = attrs;
   }
 
 let elab_program prog =
@@ -655,11 +664,8 @@ let elab_program prog =
             begin match opt with
             | None -> throw (Error.Undefined fun_def.Ast.fun_name)
             | Some (Typing.Forall(kinds, Typing.Fun_ty ty))->
-               let is_entry = match next.Ast.annot_attr with
-                 | Some (Attr_ident "entry") -> true
-                 | _ -> false
-               in
-               let* fun_def = check_fun fun_def is_entry kinds ty in
+               let fun_attrs, _ = extract_fun_attrs next.Ast.annot_attrs in
+               let* fun_def = check_fun fun_def fun_attrs kinds ty in
                let+ decls = loop decls in
                Typing.Fun fun_def :: decls
             | Some _ -> throw Error.Expected_function_type
