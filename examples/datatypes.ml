@@ -28,7 +28,7 @@ fun foo(Pt(0, _)) = puts("Touching the x-axis")
      | (Pt(_, _)) = ()
 
 val main: fun() -> Int32
-fun main() =
+[@entry] fun main() =
   puts("Booleans");
   foo(inv(Pt(1, 0)));
   f(g(Some(5)))

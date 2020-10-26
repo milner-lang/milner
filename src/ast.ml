@@ -1,4 +1,8 @@
+type attr =
+  | Attr_ident of string
+
 type 'a annot = {
+    annot_attr : attr option;
     annot_item : 'a;
     annot_begin : Lexing.position;
     annot_end : Lexing.position;

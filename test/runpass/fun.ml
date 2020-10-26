@@ -21,4 +21,4 @@ fun str_fun(0) = "foofoo"
   | (n) = ""
 
 val main : fun() -> Int32
-fun main() = 0
+[@entry] fun main() = 0

@@ -92,6 +92,7 @@ type fun_def = {
     fun_params : ns var list;
     fun_tree : case_tree;
     fun_clauses : (ns var StringMap.t * expr) list;
+    fun_is_entry : bool;
   }
 
 type decl =

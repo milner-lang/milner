@@ -184,6 +184,7 @@ and compile_datatype global type_args adt adt_tyargs =
 
 and mangle_fun global type_args name fun_ty =
   let buf = Buffer.create 32 in
+  Buffer.add_string buf "__milner_";
   Buffer.add_string buf name;
   List.iter (fun ty ->
       let s = mangle_ty global type_args ty in
@@ -560,6 +561,16 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
                Vartbl.add t.llvals var llval
           ) fun_def.fun_vars;
         emit_expr global t fun_def.fun_body;
+        begin
+          if fun_def.Ir.fun_is_entry then (
+            let ty = Llvm.function_type (Llvm.i32_type llctx) [||] in
+            let main = Llvm.define_function "main" ty global.llmod in
+            let entry = Llvm.entry_block main in
+            let llbuilder = Llvm.builder_at_end llctx entry in
+            let ret = Llvm.build_call llfun [||] "" llbuilder in
+            ignore (Llvm.build_ret ret llbuilder)
+          )
+        end;
         Some llfun
 
 let emit_module datalayout llctx name prog =

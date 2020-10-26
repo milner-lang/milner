@@ -13,7 +13,7 @@ fun str_cases("") = "Empty"
   | (s) = s
 
 val main : fun() -> Int32
-fun main() =
+[@entry] fun main() =
   puts(cases(0));
   puts(cases(1));
   puts(str_cases(""));

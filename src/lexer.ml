@@ -31,11 +31,13 @@ let rec tokenize lexbuf = match%sedlex lexbuf with
   | ')' -> Ok RPAREN
   | '<' -> Ok LANGLE
   | '>' -> Ok RANGLE
+  | ']' -> Ok RSQR
   | ';' -> Ok SEMICOLON
   | '_' -> Ok UNDERSCORE
   | '"' -> string (Buffer.create 17) lexbuf
   | 0x2192 (* → *) -> Ok ARROW
   | "->" -> Ok ARROW
+  | "[@" -> Ok LSQRAT
   | base10_int ->
      let str = Sedlexing.Utf8.lexeme lexbuf in
      Ok (INT_LIT (int_of_string str))
