@@ -209,6 +209,7 @@ let read_adt adt =
   in
   let adt' =
     Typing.{
+        adt_boxing = begin if adt.Ast.adt_boxed then Boxed else Unboxed end;
         adt_name = adt.Ast.adt_name;
         adt_params = param_count;
         adt_kind = loop kinds;

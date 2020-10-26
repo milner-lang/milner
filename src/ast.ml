@@ -5,6 +5,7 @@ type 'a annot = {
   }
 
 type adt = {
+    adt_boxed : bool;
     adt_name : string;
     adt_params : (string * ty annot) list;
     adt_constrs : (string * ty annot list) list;

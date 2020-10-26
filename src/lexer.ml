@@ -13,6 +13,7 @@ let keywords = Hashtbl.create 23
 
 let () =
   Hashtbl.add keywords "as" AS;
+  Hashtbl.add keywords "boxed" BOXED;
   Hashtbl.add keywords "datatype" DATATYPE;
   Hashtbl.add keywords "external" EXTERNAL;
   Hashtbl.add keywords "fun" FUN;

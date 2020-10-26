@@ -207,8 +207,10 @@ and transl_ty global type_args ty : transl_ty =
      begin match Hashtbl.find global.types mangled with
      | Uninhabited -> Uninhabited_ty
      | Zero -> Zero_ty
-     | Product(_, ty) -> Ll_ty ty
-     | Basic_sum(ty, _) -> Ll_ty ty
+     | Product(_, ty) | Basic_sum(ty, _) ->
+       match adt.adt_boxing with
+       | Boxed -> Ll_ty (Llvm.pointer_type ty)
+       | Unboxed -> Ll_ty ty
      end
   | Typing.Neu_ty(Typing.Cstr, _) ->
      Ll_ty (Llvm.pointer_type (Llvm.i8_type llctx))

@@ -4,6 +4,7 @@ module IntMap = Map.Make(Int)
 module StringMap = Map.Make(String)
 module Subst = IntMap
 
+type boxing = Boxed | Unboxed
 type size = Sz8 | Sz16 | Sz32 | Sz64
 type sign = Signed | Unsigned
 
@@ -35,6 +36,7 @@ and fun_ty = {
   }
 
 and adt = {
+    adt_boxing : boxing;
     adt_name : string;
     adt_params : int;
     adt_kind : ty;

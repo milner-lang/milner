@@ -15,6 +15,7 @@
 %token SEMICOLON
 %token UNDERSCORE
 %token AS
+%token BOXED
 %token DATATYPE
 %token EXTERNAL
 %token FUN
@@ -65,10 +66,16 @@ let decl :=
     }
 
 let adt :=
-  DATATYPE; adt_name = UIDENT; adt_params = list(adt_param); EQUALS; BAR?;
+  boxed = BOXED?; DATATYPE; adt_name = UIDENT; adt_params = list(adt_param);
+  EQUALS; BAR?;
   adt_constrs = separated_list(BAR, constr);
     {
       Ast.{
+        adt_boxed =
+          begin match boxed with
+          | None -> false
+          | Some _ -> true
+          end;
         adt_name;
         adt_params;
         adt_constrs;
