@@ -575,7 +575,8 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
      | None -> None
      | Some (real_params, ret_ty) ->
         let param_tys =
-          (Llvm.pointer_type global.root_ty :: (real_params |> remove_nones))
+          (Llvm.pointer_type global.stack_map_ty
+           :: (real_params |> remove_nones))
           |> Array.of_list
         in
         let lltype = Llvm.function_type ret_ty param_tys in
@@ -584,15 +585,57 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
         let llbuilder = Llvm.builder_at_end llctx entry in
         let llvals = Vartbl.create (List.length fun_def.fun_vars) in
         (* Allocate stack space for all local variables *)
-        List.iter (fun var ->
-            match transl_ty global ty_args (Var.ty var) with
-            | Uninhabited_ty -> ()
-            | Zero_ty -> ()
-            | Ll_ty mach_ty ->
-               let llval = Llvm.build_alloca mach_ty "" llbuilder in
-               Vartbl.add llvals var llval
-          ) fun_def.fun_vars;
-        let stack_map = Llvm.build_alloca global.stack_map_ty "" llbuilder in
+        let roots, num_roots =
+          List.fold_right (fun var ((roots, num_roots) as acc)->
+              match transl_ty global ty_args (Var.ty var) with
+              | Uninhabited_ty -> acc
+              | Zero_ty -> acc
+              | Ll_ty mach_ty ->
+                 let llval = Llvm.build_alloca mach_ty "" llbuilder in
+                 Vartbl.add llvals var llval;
+                 match Var.ty var with
+                 | Neu_ty(Adt { adt_boxing = Boxed; _ }, _) ->
+                   (llval :: roots, num_roots + 1)
+                 | _ -> acc
+            ) fun_def.fun_vars ([], 0)
+        in
+        let stack_map =
+          let prev = Llvm.param llfun 0 in
+          if num_roots = 0 then
+            (* Alloca'ing a zero-length array is illegal, so just use the
+               previous stack map *)
+            prev
+          else
+            (* Alloca the stack map *)
+            let stack_map =
+              Llvm.build_alloca global.stack_map_ty "" llbuilder in
+            let size = Llvm.const_int (Llvm.i32_type global.llctx) num_roots in
+            (* Alloca the array of roots *)
+            let roots_arr =
+              Llvm.build_array_alloca global.root_ty size "" llbuilder
+            in
+            let prev_member = Llvm.build_struct_gep stack_map 0 "" llbuilder in
+            ignore (Llvm.build_store prev prev_member llbuilder);
+            let size_member = Llvm.build_struct_gep stack_map 1 "" llbuilder in
+            ignore (Llvm.build_store size size_member llbuilder);
+            let ptr_member = Llvm.build_struct_gep stack_map 2 "" llbuilder in
+            ignore (Llvm.build_store roots_arr ptr_member llbuilder);
+            List.iteri (fun idx root ->
+                let off =
+                  Llvm.build_gep roots_arr
+                    [|Llvm.const_int (Llvm.i64_type global.llctx) idx|] ""
+                    llbuilder
+                in
+                (* Set the root to null *)
+                ignore
+                  (Llvm.build_store
+                     (Llvm.const_null (Llvm.type_of root)) root llbuilder);
+                (* Store the root in the root array *)
+                let root_member = Llvm.build_struct_gep off 0 "" llbuilder in
+                ignore (Llvm.build_store root root_member llbuilder)
+              ) roots;
+            stack_map
+        in
         let t = {
             llbuilder;
             llfun;
@@ -614,7 +657,7 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
             let llbuilder = Llvm.builder_at_end llctx entry in
             let ret =
               Llvm.build_call llfun
-                [|Llvm.const_null (Llvm.pointer_type global.root_ty)|]
+                [|Llvm.const_null (Llvm.pointer_type global.stack_map_ty)|]
                 "" llbuilder
             in
             ignore (Llvm.build_ret ret llbuilder)
@@ -625,10 +668,18 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
 let emit_module datalayout llctx name prog =
   let llmod = Llvm.create_module llctx name in
   try
+    let void_ty = Llvm.void_type llctx in
+    let void_ptr_ty = Llvm.pointer_type void_ty in
     let root_ty = Llvm.named_struct_type llctx "milner_root" in
+    Llvm.struct_set_body root_ty
+      [| void_ptr_ty (* Pointer to *stack-allocated* data *)
+       ; Llvm.function_type void_ty [|void_ptr_ty|] (* Pointer to tracer *)
+      |] false;
     let stack_map_ty = Llvm.named_struct_type llctx "milner_stackmap" in
     Llvm.struct_set_body stack_map_ty
-      [| Llvm.i8_type llctx; root_ty; Llvm.pointer_type stack_map_ty |]
+      [| Llvm.pointer_type stack_map_ty
+       ; Llvm.i32_type llctx
+       ; Llvm.pointer_type root_ty |]
       false;
     let poly_funs = Hashtbl.create 33 in
     let cstr_ty = Llvm.pointer_type (Llvm.i8_type llctx) in
