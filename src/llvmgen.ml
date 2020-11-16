@@ -1,14 +1,9 @@
 module Vartbl =
-  Hashtbl.Make(
-      struct
-        type t = Ir.ns Var.t
-        let hash = Var.hash
-        let equal lhs rhs = Var.compare lhs rhs = 0
-      end)
-
-type calling_conv =
-  | Milner
-  | C
+  Hashtbl.Make(struct
+    type t = Ir.ns Var.t
+    let hash = Var.hash
+    let equal lhs rhs = Var.compare lhs rhs = 0
+  end)
 
 type datatype =
   | Uninhabited (** A type that cannot be constructed. *)
@@ -28,38 +23,34 @@ type transl_ty =
   | Zero_ty
   | Ll_ty of Llvm.lltype
 
-type prelude = {
-    strcmp : Llvm.llvalue;
-  }
-
 type status =
   | External of Typing.ty
   | Internal of Ir.fun_def
 
 (** The state associated with the entire codegen phase *)
 type global = {
-    llmod : Llvm.llmodule;
-    llctx : Llvm.llcontext;
-    root_ty : Llvm.lltype;
-    stack_map_ty : Llvm.lltype;
-    prelude : prelude;
-    types : (string, datatype) Hashtbl.t;
-    poly_funs : (string, status) Hashtbl.t;
-    layout : Llvm_target.DataLayout.t;
-  }
+  llmod : Llvm.llmodule;
+  llctx : Llvm.llcontext;
+  gc_alloca : Llvm.llvalue;
+  gc_malloc : Llvm.llvalue;
+  gc_push : Llvm.llvalue;
+  strcmp : Llvm.llvalue;
+  types : (string, datatype) Hashtbl.t;
+  poly_funs : (string, status) Hashtbl.t;
+  layout : Llvm_target.DataLayout.t;
+}
 
 (** The state associated with the instantiation of a function *)
 type t = {
-    llbuilder : Llvm.llbuilder;
-    llvals : Llvm.llvalue Vartbl.t;
-    llfun : Llvm.llvalue;
-    stack_map : Llvm.llvalue;
-    bbs : (int, Llvm.llbasicblock) Hashtbl.t;
-    regs : (int, Llvm.llvalue) Hashtbl.t;
-    real_params : Llvm.lltype option list;
-    ty_args : Typing.ty array;
-    phis : (string, Llvm.llvalue) Hashtbl.t;
-  }
+  llbuilder : Llvm.llbuilder;
+  llvals : Llvm.llvalue Vartbl.t;
+  llfun : Llvm.llvalue;
+  bbs : (int, Llvm.llbasicblock) Hashtbl.t;
+  regs : (int, Llvm.llvalue) Hashtbl.t;
+  real_params : Llvm.lltype option list;
+  ty_args : Typing.ty array;
+  phis : (string, Llvm.llvalue) Hashtbl.t;
+}
 
 type translated_constr =
   | No_constrs
@@ -262,8 +253,7 @@ let real_param_idx idx list =
     | [], _ -> failwith "Param index out of bounds"
     | None :: _, true -> None
     | None :: xs, false -> loop (i + 1) acc xs
-    (* Do idx + 1 because the first parameter is the parent stack map *)
-    | Some _ :: _, true -> Some (acc + 1)
+    | Some _ :: _, true -> Some acc
     | Some _ :: xs, false -> loop (i + 1) (acc + 1) xs
   in loop 0 0 list
 
@@ -371,76 +361,67 @@ and emit_expr global t = function
      end;
      emit_expr global t next
   | Ir.Let_app(dest, f, args, next) ->
-     let f, call_conv = match f with
+     let f = match f with
        | Ir.Global(name, targs) ->
          begin match Hashtbl.find global.poly_funs name with
          | External _ ->
             begin match Llvm.lookup_function name global.llmod with
             | None -> assert false
-            | Some func -> Some func, C
+            | Some func -> Some func
             end
          | Internal fun_def ->
            let mangled_name = mangle_fun global targs name fun_def.Ir.fun_ty in
            begin match Llvm.lookup_function mangled_name global.llmod with
-           | None -> emit_fun global targs fun_def, Milner
-           | Some func -> Some func, Milner
+           | None -> emit_fun global targs fun_def
+           | Some func -> Some func
            end
          end
        | _ -> failwith "Unreachable: Function call head"
      in
      begin match f with
-     | None -> ignore (Llvm.build_unreachable t.llbuilder)
-     | Some f ->
-        let llval =
-          match call_conv with
-          | C ->
-             let args =
-               List.map (emit_aexp global t) args
-               |> remove_nones
-               |> Array.of_list
-             in Llvm.build_call f args "" t.llbuilder
-          | Milner ->
-             let args =
-               (t.stack_map
-                :: (List.map (emit_aexp global t) args |> remove_nones))
-               |> Array.of_list
-             in Llvm.build_call f args "" t.llbuilder
-        in
-        match transl_ty global t.ty_args (Var.ty dest) with
-        | Uninhabited_ty -> ignore (Llvm.build_unreachable t.llbuilder)
-        | Zero_ty -> emit_expr global t next
-        | Ll_ty _ ->
-          let loc = Vartbl.find t.llvals dest in
-          ignore (Llvm.build_store llval loc t.llbuilder);
-          emit_expr global t next
+       | None -> ignore (Llvm.build_unreachable t.llbuilder)
+       | Some f ->
+         let args =
+           List.map (emit_aexp global t) args
+           |> remove_nones
+           |> Array.of_list
+         in
+         let llval = Llvm.build_call f args "" t.llbuilder in
+         match transl_ty global t.ty_args (Var.ty dest) with
+         | Uninhabited_ty -> ignore (Llvm.build_unreachable t.llbuilder)
+         | Zero_ty -> emit_expr global t next
+         | Ll_ty _ ->
+           let loc = Vartbl.find t.llvals dest in
+           ignore (Llvm.build_store llval loc t.llbuilder);
+           emit_expr global t next
      end
   | Ir.Let_constr(dest, constr, args, next) ->
-     let args = List.map (emit_aexp global t) args |> remove_nones in
-     let mangled = mangle_ty global t.ty_args (Var.ty dest) in
-     begin match Hashtbl.find_opt global.types mangled with
-     | Some (Basic_sum (_, constrs)) ->
-       begin match constrs.(constr) with
-       | Some casted_ty ->
-          let llval = Vartbl.find t.llvals dest in
-          let casted =
-            Llvm.build_bitcast llval (Llvm.pointer_type casted_ty) ""
-              t.llbuilder
-          in
-          let tag = Llvm.build_struct_gep casted 0 "" t.llbuilder in
-          ignore
-            (Llvm.build_store
-               (Llvm.const_int (Llvm.i8_type global.llctx) constr) tag
-               t.llbuilder);
-          List.iteri (fun i llval ->
-              let ptr = Llvm.build_struct_gep casted (i + 1) "" t.llbuilder in
-              ignore (Llvm.build_store llval ptr t.llbuilder)
-            ) args;
-          emit_expr global t next
-       | None -> ignore (Llvm.build_unreachable t.llbuilder)
-       end
-     | Some Uninhabited -> ignore (Llvm.build_unreachable t.llbuilder)
-     | Some Zero -> emit_expr global t next
-     | Some (Product(n, _)) ->
+    let args = List.map (emit_aexp global t) args |> remove_nones in
+    let mangled = mangle_ty global t.ty_args (Var.ty dest) in
+    begin match Hashtbl.find_opt global.types mangled with
+      | Some (Basic_sum (_, constrs)) ->
+        begin match constrs.(constr) with
+          | Some casted_ty ->
+            let llval = Vartbl.find t.llvals dest in
+            let casted =
+              Llvm.build_bitcast llval (Llvm.pointer_type casted_ty) ""
+                t.llbuilder
+            in
+            let tag = Llvm.build_struct_gep casted 0 "" t.llbuilder in
+            ignore
+              (Llvm.build_store
+                 (Llvm.const_int (Llvm.i8_type global.llctx) constr) tag
+                 t.llbuilder);
+            List.iteri (fun i llval ->
+                let ptr = Llvm.build_struct_gep casted (i + 1) "" t.llbuilder in
+                ignore (Llvm.build_store llval ptr t.llbuilder)
+              ) args;
+            emit_expr global t next
+          | None -> ignore (Llvm.build_unreachable t.llbuilder)
+        end
+      | Some Uninhabited -> ignore (Llvm.build_unreachable t.llbuilder)
+      | Some Zero -> emit_expr global t next
+      | Some (Product(n, _)) ->
         if constr = n then
           let struct_ = Vartbl.find t.llvals dest in
           List.iteri (fun i llval ->
@@ -450,105 +431,105 @@ and emit_expr global t = function
           emit_expr global t next
         else
           ignore (Llvm.build_unreachable t.llbuilder)
-     | None -> failwith "datatype not found"
-     end
+      | None -> failwith "datatype not found"
+    end
   | Ir.Let_get_tag(tag_reg, scrut, next) ->
-     let mangled = mangle_ty global t.ty_args (Var.ty scrut) in
-     begin match Hashtbl.find_opt global.types mangled with
-     | Some(Basic_sum(_, _)) ->
+    let mangled = mangle_ty global t.ty_args (Var.ty scrut) in
+    begin match Hashtbl.find_opt global.types mangled with
+      | Some(Basic_sum(_, _)) ->
         let scrut_llval = Vartbl.find t.llvals scrut in
         let ptr = Llvm.build_struct_gep scrut_llval 0 "" t.llbuilder in
         let tag = Llvm.build_load ptr "" t.llbuilder in
         Hashtbl.add t.regs tag_reg tag;
         emit_expr global t next
      | Some(Product(idx, _)) ->
-        Hashtbl.add t.regs tag_reg
-          (Llvm.const_int (Llvm.i8_type global.llctx) idx);
-        emit_expr global t next
+       Hashtbl.add t.regs tag_reg
+         (Llvm.const_int (Llvm.i8_type global.llctx) idx);
+       emit_expr global t next
      | Some _ -> failwith "Not a sum type"
      | None -> failwith "Mangled type not found"
-     end
+    end
   | Ir.Let_get_member(dest, scrut, reg, idx, next) ->
-     let mangled = mangle_ty global t.ty_args (Var.ty scrut) in
-     begin match Hashtbl.find_opt global.types mangled with
-     | Some(Basic_sum _) ->
+    let mangled = mangle_ty global t.ty_args (Var.ty scrut) in
+    begin match Hashtbl.find_opt global.types mangled with
+      | Some(Basic_sum _) ->
         let casted = Hashtbl.find t.regs reg in
         let llval =
           Llvm.build_struct_gep casted (idx + 1) "" t.llbuilder
         in
         Vartbl.add t.llvals dest llval;
         emit_expr global t next
-     | Some(Product _) ->
+      | Some(Product _) ->
         let scrut = Vartbl.find t.llvals scrut in
         let llval = Llvm.build_struct_gep scrut idx "" t.llbuilder in
         Vartbl.add t.llvals dest llval;
         emit_expr global t next
-     | Some _ -> failwith "Not a sum type"
-     | None -> failwith "Mangled type not found!"
-     end
+      | Some _ -> failwith "Not a sum type"
+      | None -> failwith "Mangled type not found!"
+    end
   | Ir.Let_select_tag(reg, v, constr, next) ->
-     let llval = Vartbl.find t.llvals v in
-     let mangled = mangle_ty global t.ty_args (Var.ty v) in
-     begin match Hashtbl.find_opt global.types mangled with
-     | Some (Basic_sum(_, constrs)) ->
+    let llval = Vartbl.find t.llvals v in
+    let mangled = mangle_ty global t.ty_args (Var.ty v) in
+    begin match Hashtbl.find_opt global.types mangled with
+      | Some (Basic_sum(_, constrs)) ->
         begin match constrs.(constr) with
-        | Some llty ->
-           let casted =
-             Llvm.build_bitcast llval (Llvm.pointer_type llty) "" t.llbuilder
-           in
-           Hashtbl.add t.regs reg casted;
-           emit_expr global t next
-        | None -> ignore (Llvm.build_unreachable t.llbuilder)
+          | Some llty ->
+            let casted =
+              Llvm.build_bitcast llval (Llvm.pointer_type llty) "" t.llbuilder
+            in
+            Hashtbl.add t.regs reg casted;
+            emit_expr global t next
+          | None -> ignore (Llvm.build_unreachable t.llbuilder)
         end
-     | Some(Product(_, _)) -> emit_expr global t next
-     | Some _ -> failwith "Not a sum type"
-     | None -> failwith "Mangled type not found"
+      | Some(Product(_, _)) -> emit_expr global t next
+      | Some _ -> failwith "Not a sum type"
+      | None -> failwith "Mangled type not found"
      end
   | Ir.Let_eqint32(dest, lhs, rhs, next) ->
-     emit_cmp Llvm.Icmp.Eq global t dest lhs rhs;
-     emit_expr global t next
+    emit_cmp Llvm.Icmp.Eq global t dest lhs rhs;
+    emit_expr global t next
   | Ir.Let_gtint32(dest, lhs, rhs, next) ->
-     emit_cmp Llvm.Icmp.Sgt global t dest lhs rhs;
-     emit_expr global t next
+    emit_cmp Llvm.Icmp.Sgt global t dest lhs rhs;
+    emit_expr global t next
   | Ir.Let_strcmp(dest, lhs, rhs, next) ->
-     begin match emit_aexp global t lhs, emit_aexp global t rhs with
-     | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
-     | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
-     | Some _, None -> failwith "Unreachable: rhs cannot be unit"
-     | Some lhs, Some rhs ->
+    begin match emit_aexp global t lhs, emit_aexp global t rhs with
+      | None, None -> failwith "Unreachable: lhs and rhs cannot be unit"
+      | None, Some _ -> failwith "Unreachable: lhs cannot be unit"
+      | Some _, None -> failwith "Unreachable: rhs cannot be unit"
+      | Some lhs, Some rhs ->
         let llval =
-          Llvm.build_call global.prelude.strcmp [|lhs; rhs|]
+          Llvm.build_call global.strcmp [|lhs; rhs|]
             ("tmp" ^ Int.to_string dest) t.llbuilder
         in
         Hashtbl.add t.regs dest llval;
         emit_expr global t next
-     end
+    end
   | Ir.Let_cont(bbname, params, cont, next) ->
-     let curr_bb = Llvm.insertion_block t.llbuilder in
-     let bb = Llvm.append_block global.llctx (Int.to_string bbname) t.llfun in
-     Llvm.position_at_end bb t.llbuilder;
-     let with_tys =
-       List.fold_left (fun acc (name, var) ->
-           match acc with
-           | None -> None
-           | Some ls ->
-              match transl_ty global t.ty_args (Var.ty var) with
-              | Uninhabited_ty -> None
-              | Zero_ty -> Some ((name, var, None) :: ls)
-              | Ll_ty ty -> Some ((name, var, Some ty) :: ls))
-         (Some []) params
-     in
-     begin match with_tys with
-     | None -> ignore (Llvm.build_unreachable t.llbuilder)
-     | Some tys ->
+    let curr_bb = Llvm.insertion_block t.llbuilder in
+    let bb = Llvm.append_block global.llctx (Int.to_string bbname) t.llfun in
+    Llvm.position_at_end bb t.llbuilder;
+    let with_tys =
+      List.fold_left (fun acc (name, var) ->
+          match acc with
+          | None -> None
+          | Some ls ->
+            match transl_ty global t.ty_args (Var.ty var) with
+            | Uninhabited_ty -> None
+            | Zero_ty -> Some ((name, var, None) :: ls)
+            | Ll_ty ty -> Some ((name, var, Some ty) :: ls))
+        (Some []) params
+    in
+    begin match with_tys with
+      | None -> ignore (Llvm.build_unreachable t.llbuilder)
+      | Some tys ->
         List.iter (function
             | (_, _, None) -> ()
             | (name, var, Some llty) ->
-               let phi =
-                 Llvm.build_empty_phi (Llvm.pointer_type llty) "" t.llbuilder
-               in
-               Hashtbl.add t.phis name phi;
-               Vartbl.add t.llvals var phi;
+              let phi =
+                Llvm.build_empty_phi (Llvm.pointer_type llty) "" t.llbuilder
+              in
+              Hashtbl.add t.phis name phi;
+              Vartbl.add t.llvals var phi;
           ) tys;
         Hashtbl.add t.bbs bbname bb;
         Llvm.position_at_end curr_bb t.llbuilder;
@@ -557,11 +538,11 @@ and emit_expr global t = function
         emit_expr global t next;
         Llvm.position_at_end bb t.llbuilder;
         emit_expr global t cont
-     end
+    end
   | Ir.Return aexp ->
-     match emit_aexp global t aexp with
-     | None -> ignore (Llvm.build_ret_void t.llbuilder)
-     | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
+    match emit_aexp global t aexp with
+    | None -> ignore (Llvm.build_ret_void t.llbuilder)
+    | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
 
 and emit_fun global ty_args fun_def : Llvm.llvalue option =
   let mangled =
@@ -570,159 +551,152 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
   match Llvm.lookup_function mangled global.llmod with
   | Some func -> Some func
   | None ->
-     let llctx = Llvm.module_context global.llmod in
-     match transl_fun_ty global ty_args fun_def.Ir.fun_ty with
-     | None -> None
-     | Some (real_params, ret_ty) ->
-        let param_tys =
-          (Llvm.pointer_type global.stack_map_ty
-           :: (real_params |> remove_nones))
-          |> Array.of_list
-        in
-        let lltype = Llvm.function_type ret_ty param_tys in
-        let llfun = Llvm.define_function mangled lltype global.llmod in
-        let entry = Llvm.entry_block llfun in
-        let llbuilder = Llvm.builder_at_end llctx entry in
-        let llvals = Vartbl.create (List.length fun_def.fun_vars) in
-        (* Allocate stack space for all local variables *)
-        let roots, num_roots =
-          List.fold_right (fun var ((roots, num_roots) as acc)->
-              match transl_ty global ty_args (Var.ty var) with
-              | Uninhabited_ty -> acc
-              | Zero_ty -> acc
-              | Ll_ty mach_ty ->
-                 let llval = Llvm.build_alloca mach_ty "" llbuilder in
-                 Vartbl.add llvals var llval;
-                 match Var.ty var with
-                 | Neu_ty(Adt { adt_boxing = Boxed; _ }, _) ->
-                   (llval :: roots, num_roots + 1)
-                 | _ -> acc
-            ) fun_def.fun_vars ([], 0)
-        in
+    let llctx = Llvm.module_context global.llmod in
+    match transl_fun_ty global ty_args fun_def.Ir.fun_ty with
+    | None -> None
+    | Some (real_params, ret_ty) ->
+      let param_tys = real_params |> remove_nones |> Array.of_list in
+      let lltype = Llvm.function_type ret_ty param_tys in
+      let llfun = Llvm.define_function mangled lltype global.llmod in
+      let entry = Llvm.entry_block llfun in
+      let llbuilder = Llvm.builder_at_end llctx entry in
+      let llvals = Vartbl.create (List.length fun_def.fun_vars) in
+      (* Tell the GC to register a new stack frame *)
+      ignore (Llvm.build_call global.gc_push [||] "" llbuilder);
+      (* Allocate stack space for all local variables *)
+      List.iter (fun var ->
+          match transl_ty global ty_args (Var.ty var) with
+          | Uninhabited_ty -> ()
+          | Zero_ty -> ()
+          | Ll_ty mach_ty ->
+            let llval = match Var.ty var with
+              | Neu_ty(Adt { adt_boxing = Boxed; _ }, _) ->
+                Llvm.build_call global.gc_alloca [||] "" llbuilder
+              | _ -> Llvm.build_alloca mach_ty "" llbuilder
+            in
+            Vartbl.add llvals var llval;
+        ) fun_def.fun_vars;
+      (*let stack_map =
+        let prev = Llvm.param llfun 0 in
+        (* Alloca the stack map *)
         let stack_map =
-          let prev = Llvm.param llfun 0 in
-          if num_roots = 0 then
-            (* Alloca'ing a zero-length array is illegal, so just use the
-               previous stack map *)
-            prev
-          else
-            (* Alloca the stack map *)
-            let stack_map =
-              Llvm.build_alloca global.stack_map_ty "" llbuilder in
-            let size = Llvm.const_int (Llvm.i32_type global.llctx) num_roots in
-            (* Alloca the array of roots *)
-            let roots_arr =
-              Llvm.build_array_alloca global.root_ty size "" llbuilder
-            in
-            let prev_member = Llvm.build_struct_gep stack_map 0 "" llbuilder in
-            ignore (Llvm.build_store prev prev_member llbuilder);
-            let size_member = Llvm.build_struct_gep stack_map 1 "" llbuilder in
-            ignore (Llvm.build_store size size_member llbuilder);
-            let ptr_member = Llvm.build_struct_gep stack_map 2 "" llbuilder in
-            ignore (Llvm.build_store roots_arr ptr_member llbuilder);
-            List.iteri (fun idx root ->
-                let off =
-                  Llvm.build_gep roots_arr
-                    [|Llvm.const_int (Llvm.i64_type global.llctx) idx|] ""
-                    llbuilder
-                in
-                (* Set the root to null *)
-                ignore
-                  (Llvm.build_store
-                     (Llvm.const_null (Llvm.type_of root)) root llbuilder);
-                (* Store the root in the root array *)
-                let root_member = Llvm.build_struct_gep off 0 "" llbuilder in
-                ignore (Llvm.build_store root root_member llbuilder)
-              ) roots;
-            stack_map
+          Llvm.build_alloca global.stack_map_ty "" llbuilder in
+        let size = Llvm.const_int (Llvm.i32_type global.llctx) num_roots in
+        (* Alloca the array of roots *)
+        let roots_arr =
+          Llvm.build_array_alloca global.root_ty size "" llbuilder
         in
-        let t = {
-            llbuilder;
-            llfun;
-            llvals;
-            stack_map;
-            bbs = Hashtbl.create 10;
-            regs = Hashtbl.create 10;
-            real_params;
-            ty_args;
-            phis = Hashtbl.create 21;
-          }
-        in
-        emit_expr global t fun_def.fun_body;
-        begin
-          if fun_def.fun_attrs.is_entry then (
-            let ty = Llvm.function_type (Llvm.i32_type llctx) [||] in
-            let main = Llvm.define_function "main" ty global.llmod in
-            let entry = Llvm.entry_block main in
-            let llbuilder = Llvm.builder_at_end llctx entry in
-            let ret =
-              Llvm.build_call llfun
-                [|Llvm.const_null (Llvm.pointer_type global.stack_map_ty)|]
-                "" llbuilder
+        let prev_member = Llvm.build_struct_gep stack_map 0 "" llbuilder in
+        ignore (Llvm.build_store prev prev_member llbuilder);
+        let size_member = Llvm.build_struct_gep stack_map 1 "" llbuilder in
+        ignore (Llvm.build_store size size_member llbuilder);
+        let ptr_member = Llvm.build_struct_gep stack_map 2 "" llbuilder in
+        ignore (Llvm.build_store roots_arr ptr_member llbuilder);
+        List.iteri (fun idx root ->
+            let off =
+              Llvm.build_gep roots_arr
+                [|Llvm.const_int (Llvm.i64_type global.llctx) idx|] ""
+                llbuilder
             in
-            ignore (Llvm.build_ret ret llbuilder)
-          )
-        end;
-        Some llfun
+            (* Set the root to null *)
+            ignore
+              (Llvm.build_store
+                 (Llvm.const_null (Llvm.type_of root)) root llbuilder);
+            (* Store the root in the root array *)
+            let root_member = Llvm.build_struct_gep off 0 "" llbuilder in
+            ignore (Llvm.build_store root root_member llbuilder)
+          ) roots;
+        stack_map
+      in*)
+      let t = {
+        llbuilder;
+        llfun;
+        llvals;
+        bbs = Hashtbl.create 10;
+        regs = Hashtbl.create 10;
+        real_params;
+        ty_args;
+        phis = Hashtbl.create 21;
+      }
+      in
+      emit_expr global t fun_def.fun_body;
+      begin
+        if fun_def.fun_attrs.is_entry then (
+          let ty = Llvm.function_type (Llvm.i32_type llctx) [||] in
+          let main = Llvm.define_function "main" ty global.llmod in
+          let entry = Llvm.entry_block main in
+          let llbuilder = Llvm.builder_at_end llctx entry in
+          let ret =
+            Llvm.build_call llfun [||]
+              "" llbuilder
+          in
+          ignore (Llvm.build_ret ret llbuilder)
+        )
+      end;
+      Some llfun
 
 let emit_module datalayout llctx name prog =
   let llmod = Llvm.create_module llctx name in
   try
-    let void_ty = Llvm.void_type llctx in
-    let void_ptr_ty = Llvm.pointer_type void_ty in
-    let root_ty = Llvm.named_struct_type llctx "milner_root" in
-    Llvm.struct_set_body root_ty
-      [| void_ptr_ty (* Pointer to *stack-allocated* data *)
-       ; Llvm.function_type void_ty [|void_ptr_ty|] (* Pointer to tracer *)
-      |] false;
-    let stack_map_ty = Llvm.named_struct_type llctx "milner_stackmap" in
-    Llvm.struct_set_body stack_map_ty
-      [| Llvm.pointer_type stack_map_ty
-       ; Llvm.i32_type llctx
-       ; Llvm.pointer_type root_ty |]
-      false;
     let poly_funs = Hashtbl.create 33 in
     let cstr_ty = Llvm.pointer_type (Llvm.i8_type llctx) in
+    let gc_alloca =
+      let ty =
+        Llvm.function_type (Llvm.pointer_type (Llvm.void_type llctx)) [||]
+      in Llvm.declare_function "gc_alloca" ty llmod
+    in
+    let gc_malloc =
+      let ty =
+        Llvm.function_type (Llvm.pointer_type (Llvm.void_type llctx))
+          [| Llvm.i32_type llctx |]
+      in Llvm.declare_function "gc_malloc" ty llmod
+    in
+    let gc_push =
+      let ty = Llvm.function_type (Llvm.void_type llctx) [||] in
+      Llvm.declare_function "gc_push" ty llmod
+    in
     let strcmp =
-      let ty = Llvm.function_type (Llvm.i32_type llctx) [| cstr_ty; cstr_ty |]
+      let ty =
+        Llvm.function_type (Llvm.i32_type llctx) [| cstr_ty; cstr_ty |]
       in Llvm.declare_function "strcmp" ty llmod
     in
     let global = {
-        llctx;
-        llmod;
-        root_ty;
-        stack_map_ty;
-        prelude = { strcmp };
-        types = Hashtbl.create 33;
-        poly_funs;
-        layout = datalayout
-      }
+      llctx;
+      llmod;
+      gc_alloca;
+      gc_malloc;
+      gc_push;
+      strcmp;
+      types = Hashtbl.create 33;
+      poly_funs;
+      layout = datalayout
+    }
     in
     List.iter (function
         | Ir.External(name, ty) ->
-           Hashtbl.add poly_funs name (External ty)
+          Hashtbl.add poly_funs name (External ty)
         | Ir.Fun fun_def ->
-           Hashtbl.add poly_funs fun_def.Ir.fun_name (Internal fun_def)
+          Hashtbl.add poly_funs fun_def.Ir.fun_name (Internal fun_def)
       ) prog.Ir.decls;
     List.iter (function
         | Ir.External(name, Typing.Fun_ty ty) ->
-           begin match transl_fun_ty global [||] ty with
-           | None -> failwith "C function has uninhabited type"
-           | Some (params, ret) ->
+          begin match transl_fun_ty global [||] ty with
+            | None -> failwith "C function has uninhabited type"
+            | Some (params, ret) ->
               let params = params |> remove_nones |> Array.of_list in
               let llty = Llvm.function_type ret params in
               ignore (Llvm.declare_function name llty llmod)
-           end
+          end
         | Ir.External(_name, _) ->
-           failwith "External symbol not a function!"
+          failwith "External symbol not a function!"
         | Ir.Fun fun_def ->
-           if fun_def.Ir.fun_poly = [] then
-             ignore (emit_fun global [||] fun_def)
+          if fun_def.Ir.fun_poly = [] then
+            ignore (emit_fun global [||] fun_def)
       ) prog.Ir.decls;
     Llvm.set_data_layout
       (Llvm_target.DataLayout.as_string global.layout) llmod;
     llmod
   with
   | e ->
-     Llvm.dispose_module llmod;
-     raise e
+    Llvm.dispose_module llmod;
+    raise e

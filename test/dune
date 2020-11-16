@@ -2,6 +2,7 @@
   (name testpass)
   (deps
     ../exe/main.exe
+    (glob_files ../runtime/*.c)
     (glob_files ../examples/*.ml)
     (glob_files runpass/*.ml))
   (modules testpass)

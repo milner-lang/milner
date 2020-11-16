@@ -7,31 +7,31 @@ let compile filename =
   match Unix.waitpid [] pid with
   | _, Unix.WEXITED 0 -> ()
   | _, Unix.WEXITED n ->
-     let msg =
-       "Test " ^ filename ^ " failed with exit code "
-       ^ Int.to_string n ^ " at compile-time"
-     in failwith msg
+    let msg =
+      "Test " ^ filename ^ " failed with exit code "
+      ^ Int.to_string n ^ " at compile-time"
+    in failwith msg
   | _, Unix.WSIGNALED _ ->
-     failwith ("Test " ^ filename ^ " signaled at compile-time")
+    failwith ("Test " ^ filename ^ " signaled at compile-time")
   | _, Unix.WSTOPPED _ ->
-     failwith ("Test " ^ filename ^ " stopped at compile-time")
+    failwith ("Test " ^ filename ^ " stopped at compile-time")
 
 let cc_compile filename =
   let pid =
-    Unix.create_process "cc" [|"cc"; "a.o"|]
+    Unix.create_process "cc" [|"cc"; "a.o"; "../runtime/gc.c"|]
       Unix.stdin Unix.stdout Unix.stderr
   in
   match Unix.waitpid [] pid with
   | _, Unix.WEXITED 0 -> ()
   | _, Unix.WEXITED n ->
-     let msg =
-       "Test " ^ filename ^ " failed with exit code "
-       ^ Int.to_string n ^ " at c compiler"
-     in failwith msg
+    let msg =
+      "Test " ^ filename ^ " failed with exit code "
+      ^ Int.to_string n ^ " at c compiler"
+    in failwith msg
   | _, Unix.WSIGNALED _ ->
-     failwith ("Test " ^ filename ^ " signaled at c compiler")
+    failwith ("Test " ^ filename ^ " signaled at c compiler")
   | _, Unix.WSTOPPED _ ->
-     failwith ("Test " ^ filename ^ " stopped at c compiler")
+    failwith ("Test " ^ filename ^ " stopped at c compiler")
 
 let run filename =
   let pid =
@@ -41,14 +41,14 @@ let run filename =
   match Unix.waitpid [] pid with
   | _, Unix.WEXITED 0 -> ()
   | _, Unix.WEXITED n ->
-     let msg =
-       "Test " ^ filename ^ " failed with exit code "
-       ^ Int.to_string n ^ " at runtime"
-     in failwith msg
+    let msg =
+      "Test " ^ filename ^ " failed with exit code "
+      ^ Int.to_string n ^ " at runtime"
+    in failwith msg
   | _, Unix.WSIGNALED _ ->
-     failwith ("Test " ^ filename ^ " signaled at runtime")
+    failwith ("Test " ^ filename ^ " signaled at runtime")
   | _, Unix.WSTOPPED _ ->
-     failwith ("Test " ^ filename ^ " stopped at runtime")
+    failwith ("Test " ^ filename ^ " stopped at runtime")
 
 let test_dir dir =
   let handle = Unix.opendir dir in
