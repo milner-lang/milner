@@ -31,9 +31,12 @@ type status =
 type global = {
   llmod : Llvm.llmodule;
   llctx : Llvm.llcontext;
+  gc_init : Llvm.llvalue;
+  gc_destroy : Llvm.llvalue;
   gc_alloca : Llvm.llvalue;
   gc_malloc : Llvm.llvalue;
-  gc_push : Llvm.llvalue;
+  gc_push_frame : Llvm.llvalue;
+  gc_pop_frame : Llvm.llvalue;
   strcmp : Llvm.llvalue;
   types : (string, datatype) Hashtbl.t;
   poly_funs : (string, status) Hashtbl.t;
@@ -540,6 +543,7 @@ and emit_expr global t = function
         emit_expr global t cont
     end
   | Ir.Return aexp ->
+    ignore (Llvm.build_call global.gc_pop_frame [||] "" t.llbuilder);
     match emit_aexp global t aexp with
     | None -> ignore (Llvm.build_ret_void t.llbuilder)
     | Some llval -> ignore (Llvm.build_ret llval t.llbuilder)
@@ -562,7 +566,7 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
       let llbuilder = Llvm.builder_at_end llctx entry in
       let llvals = Vartbl.create (List.length fun_def.fun_vars) in
       (* Tell the GC to register a new stack frame *)
-      ignore (Llvm.build_call global.gc_push [||] "" llbuilder);
+      ignore (Llvm.build_call global.gc_push_frame [||] "" llbuilder);
       (* Allocate stack space for all local variables *)
       List.iter (fun var ->
           match transl_ty global ty_args (Var.ty var) with
@@ -626,10 +630,9 @@ and emit_fun global ty_args fun_def : Llvm.llvalue option =
           let main = Llvm.define_function "main" ty global.llmod in
           let entry = Llvm.entry_block main in
           let llbuilder = Llvm.builder_at_end llctx entry in
-          let ret =
-            Llvm.build_call llfun [||]
-              "" llbuilder
-          in
+          ignore (Llvm.build_call global.gc_init [||] "" llbuilder);
+          let ret = Llvm.build_call llfun [||] "" llbuilder in
+          ignore (Llvm.build_call global.gc_destroy [||] "" llbuilder);
           ignore (Llvm.build_ret ret llbuilder)
         )
       end;
@@ -640,20 +643,32 @@ let emit_module datalayout llctx name prog =
   try
     let poly_funs = Hashtbl.create 33 in
     let cstr_ty = Llvm.pointer_type (Llvm.i8_type llctx) in
+    let gc_init =
+      let ty = Llvm.function_type (Llvm.void_type llctx) [||] in
+      Llvm.declare_function "gc_init" ty llmod
+    in
+    let gc_destroy =
+      let ty = Llvm.function_type (Llvm.void_type llctx) [||] in
+      Llvm.declare_function "gc_destroy" ty llmod
+    in
     let gc_alloca =
       let ty =
-        Llvm.function_type (Llvm.pointer_type (Llvm.void_type llctx)) [||]
+        Llvm.function_type (Llvm.pointer_type (Llvm.i8_type llctx)) [||]
       in Llvm.declare_function "gc_alloca" ty llmod
     in
     let gc_malloc =
       let ty =
-        Llvm.function_type (Llvm.pointer_type (Llvm.void_type llctx))
+        Llvm.function_type (Llvm.pointer_type (Llvm.i8_type llctx))
           [| Llvm.i32_type llctx |]
       in Llvm.declare_function "gc_malloc" ty llmod
     in
-    let gc_push =
+    let gc_push_frame =
       let ty = Llvm.function_type (Llvm.void_type llctx) [||] in
-      Llvm.declare_function "gc_push" ty llmod
+      Llvm.declare_function "gc_push_frame" ty llmod
+    in
+    let gc_pop_frame =
+      let ty = Llvm.function_type (Llvm.void_type llctx) [||] in
+      Llvm.declare_function "gc_pop_frame" ty llmod
     in
     let strcmp =
       let ty =
@@ -663,9 +678,12 @@ let emit_module datalayout llctx name prog =
     let global = {
       llctx;
       llmod;
+      gc_init;
+      gc_destroy;
       gc_alloca;
       gc_malloc;
-      gc_push;
+      gc_push_frame;
+      gc_pop_frame;
       strcmp;
       types = Hashtbl.create 33;
       poly_funs;

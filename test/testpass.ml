@@ -18,7 +18,7 @@ let compile filename =
 
 let cc_compile filename =
   let pid =
-    Unix.create_process "cc" [|"cc"; "a.o"; "../runtime/gc.c"|]
+    Unix.create_process "cc" [|"cc"; "-std=c11"; "a.o"; "../runtime/gc.c"|]
       Unix.stdin Unix.stdout Unix.stderr
   in
   match Unix.waitpid [] pid with
